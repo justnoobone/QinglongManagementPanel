@@ -1,0 +1,28 @@
+services:
+  ql-panel:
+    build: .
+    container_name: ql-panel-backend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      PANEL_USERNAME: "${PANEL_USERNAME:-admin}"
+      PANEL_PASSWORD: "${PANEL_PASSWORD:-change-me}"
+      SECRET_KEY: "${SECRET_KEY:-change-this-secret-key}"
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-jwt-secret-key}"
+      QL_DATA_PATH: "${QL_DATA_PATH:-/home/docker/qinglong}"
+      QL_IMAGE: "${QL_IMAGE:-whyour/qinglong:latest}"
+      QL0_IMAGE: "${QL0_IMAGE:-whyour/qinglong:debian-python3.10}"
+      PANEL_DATA_DIR: /qlpanel/data
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${QL_HOST_DATA_PATH:-/home/docker/qinglong}:${QL_DATA_PATH:-/home/docker/qinglong}
+      - ${PANEL_HOST_DATA_PATH:-./data}:/qlpanel/data
+      - ${NGINX_HOST_PATH:-/home/docker/nginx}:/home/docker/nginx
+    networks:
+      - ql_net
+
+networks:
+  ql_net:
+    name: ql_net
+    driver: bridge
