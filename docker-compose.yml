@@ -1,7 +1,7 @@
 services:
   ql-panel:
     build: .
-    container_name: ql-panel-backend
+    container_name: ql_manager
     restart: unless-stopped
     ports:
       - "8080:80"

@@ -77,17 +77,20 @@ def list_instances():
     return result
 
 
-def create_instance(num, use_nginx=True):
+def create_instance(num, use_nginx=True, image=None, cpu_limit=None, mem_limit=None):
     """创建青龙实例
     use_nginx: 是否启用 nginx 反向代理
-    - 启用时设置 QlBaseUrl=/ql{N}/，使青龙面板支持子路径访问
-    - 禁用时设置 QlBaseUrl=/，仅支持直连访问
+    image: 自定义镜像，不传则使用默认镜像
+    cpu_limit: CPU 限制（nano_cpus），不传则默认 1 核
+    mem_limit: 内存限制，不传则默认 1g
     """
     client = get_client()
     name = get_container_name(num)
     data_dir = get_data_dir(num)
     port = get_port(num)
-    image = get_image(num)
+    image = image or get_image(num)
+    cpu_limit = cpu_limit or 1000000000  # 默认 1 核
+    mem_limit = mem_limit or "1g"
 
     # 检查并创建数据目录
     if not os.path.exists(data_dir):
@@ -112,8 +115,8 @@ def create_instance(num, use_nginx=True):
         volumes={data_dir: {'bind': '/ql/data', 'mode': 'rw'}},
         network="ql_net",
         environment=[f"QlBaseUrl={ql_base_url}"],
-        mem_limit="1g",
-        nano_cpus=1000000000
+        mem_limit=mem_limit,
+        nano_cpus=cpu_limit
     )
 
     # 更新 nginx 配置
@@ -190,7 +193,7 @@ def purge_instance(num):
     _update_nginx_config()
 
 
-def reset_instance(num, use_nginx=True):
+def reset_instance(num, use_nginx=True, image=None, cpu_limit=None, mem_limit=None):
     """重置青龙实例（删除并重新创建）
     use_nginx: 是否在 nginx 代理中注册该实例
     """
@@ -203,7 +206,7 @@ def reset_instance(num, use_nginx=True):
 
     # 重新创建
     os.makedirs(data_dir)
-    create_instance(num, use_nginx=use_nginx)
+    create_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
 
 def get_logs(num, tail=200):
@@ -367,7 +370,7 @@ server {{
 
     # Dynamic nav page
     location = / {{
-        proxy_pass http://ql-panel-backend:5000/api/nav;
+        proxy_pass http://ql_manager:5000/api/nav;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }}

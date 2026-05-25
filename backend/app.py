@@ -332,11 +332,14 @@ h1 {{
             remote = _get_remote_server(server_id)
             data = request.get_json(silent=True) or {}
             use_nginx = data.get('use_nginx', True)
+            image = data.get('image') or None
+            cpu_limit = data.get('cpu_limit') or None
+            mem_limit = data.get('mem_limit') or None
 
             if remote:
                 remote_docker.create_instance(remote, num)
             else:
-                create_instance(num, use_nginx=use_nginx)
+                create_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
             # Save metadata if provided
             if data.get('start_date') or data.get('end_date') or data.get('notes') or 'use_nginx' in data:
@@ -390,11 +393,14 @@ h1 {{
             remote = _get_remote_server(server_id)
             data = request.get_json(silent=True) or {}
             use_nginx = data.get('use_nginx', True)
+            image = data.get('image') or None
+            cpu_limit = data.get('cpu_limit') or None
+            mem_limit = data.get('mem_limit') or None
 
             if remote:
                 remote_docker.reset_instance(remote, num)
             else:
-                reset_instance(num, use_nginx=use_nginx)
+                reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
             # 更新元数据中的 use_nginx
             metadata = load_metadata()
@@ -476,6 +482,9 @@ h1 {{
         data = request.get_json(silent=True) or {}
         nums = data.get('nums', [])
         use_nginx = data.get('use_nginx', True)
+        image = data.get('image') or None
+        cpu_limit = data.get('cpu_limit') or None
+        mem_limit = data.get('mem_limit') or None
         if not nums:
             return jsonify({"error": "请选择至少一个实例"}), 400
 
@@ -498,7 +507,7 @@ h1 {{
                     if remote:
                         remote_docker.reset_instance(remote, num)
                     else:
-                        reset_instance(num, use_nginx=use_nginx)
+                        reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
                     # 更新元数据中的 use_nginx
                     metadata = load_metadata()
                     key = metadata_key(server_id, num)
