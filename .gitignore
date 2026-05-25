@@ -24,3 +24,4 @@ frontend/dist/
 # 测试脚本（含密码）
 deploy_test.py
 test_api.py
+upload_changes.py
