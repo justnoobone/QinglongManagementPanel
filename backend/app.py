@@ -337,7 +337,7 @@ h1 {{
             mem_limit = data.get('mem_limit') or None
 
             if remote:
-                remote_docker.create_instance(remote, num)
+                remote_docker.create_instance(remote, num, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
             else:
                 create_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
@@ -398,7 +398,7 @@ h1 {{
             mem_limit = data.get('mem_limit') or None
 
             if remote:
-                remote_docker.reset_instance(remote, num)
+                remote_docker.reset_instance(remote, num, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
             else:
                 reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
@@ -505,7 +505,7 @@ h1 {{
                         stop_instance(num)
                 elif action == 'reset':
                     if remote:
-                        remote_docker.reset_instance(remote, num)
+                        remote_docker.reset_instance(remote, num, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
                     else:
                         reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
                     # 更新元数据中的 use_nginx

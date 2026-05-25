@@ -145,11 +145,11 @@
           <label>备注</label>
           <input v-model="createNotes" type="text" placeholder="备注信息">
         </div>
-        <div v-if="isLocalServer()" class="form-group">
+        <div class="form-group">
           <label>镜像（留空使用默认）</label>
           <input v-model="createImage" type="text" :placeholder="`默认: ${getDefaultImageHint()}`">
         </div>
-        <div v-if="isLocalServer()" class="form-row">
+        <div class="form-row">
           <div class="form-group flex-1">
             <label>CPU（核数）</label>
             <input v-model="createCpuLimit" type="text" placeholder="默认: 1">
@@ -475,11 +475,9 @@ export default {
           notes: this.createNotes,
           use_nginx: this.createUseNginx,
         }
-        if (this.isLocalServer()) {
-          if (this.createImage) payload.image = this.createImage
-          if (this.createCpuLimit) payload.cpu_limit = parseInt(this.createCpuLimit) * 1000000000 || undefined
-          if (this.createMemLimit) payload.mem_limit = this.createMemLimit
-        }
+        if (this.createImage) payload.image = this.createImage
+        if (this.createCpuLimit) payload.cpu_limit = parseInt(this.createCpuLimit) * 1000000000 || undefined
+        if (this.createMemLimit) payload.mem_limit = this.createMemLimit
         await axios.post(`/servers/${this.currentServer}/create/${this.createNum}`, payload, { headers: this.getAuthHeaders() })
         this.showCreate = false
         this.createNum = null
@@ -506,11 +504,9 @@ export default {
           await axios.delete(`/servers/${this.currentServer}/purge/${id}`, { headers: this.getAuthHeaders() })
         } else if (action === 'reset') {
           const payload = { use_nginx: this.confirmUseNginx }
-          if (this.isLocalServer()) {
-            if (this.confirmImage) payload.image = this.confirmImage
-            if (this.confirmCpuLimit) payload.cpu_limit = parseInt(this.confirmCpuLimit) * 1000000000 || undefined
-            if (this.confirmMemLimit) payload.mem_limit = this.confirmMemLimit
-          }
+          if (this.confirmImage) payload.image = this.confirmImage
+          if (this.confirmCpuLimit) payload.cpu_limit = parseInt(this.confirmCpuLimit) * 1000000000 || undefined
+          if (this.confirmMemLimit) payload.mem_limit = this.confirmMemLimit
           await axios.post(`/servers/${this.currentServer}/reset/${id}`, payload, { headers: this.getAuthHeaders() })
         } else {
           await axios.post(`/servers/${this.currentServer}/${action}/${id}`, {}, { headers: this.getAuthHeaders() })
@@ -529,7 +525,7 @@ export default {
       // 重置操作且本地服务器有nginx运行时，显示nginx选项
       this.confirmShowNginxOption = action === 'reset' && this.isLocalServer() && this.nginxInfo.exists && this.nginxInfo.status === 'running' && id > 0
       // 重置操作且本地服务器时，显示高级配置
-      this.confirmShowAdvanced = action === 'reset' && this.isLocalServer()
+      this.confirmShowAdvanced = action === 'reset'
       this.confirmInstId = id
       this.confirmUseNginx = true
       this.confirmImage = ''
@@ -567,11 +563,9 @@ export default {
         const payload = { nums: this.selectedIds }
         if (action === 'reset') {
           payload.use_nginx = this.confirmUseNginx
-          if (this.isLocalServer()) {
-            if (this.confirmImage) payload.image = this.confirmImage
-            if (this.confirmCpuLimit) payload.cpu_limit = parseInt(this.confirmCpuLimit) * 1000000000 || undefined
-            if (this.confirmMemLimit) payload.mem_limit = this.confirmMemLimit
-          }
+          if (this.confirmImage) payload.image = this.confirmImage
+          if (this.confirmCpuLimit) payload.cpu_limit = parseInt(this.confirmCpuLimit) * 1000000000 || undefined
+          if (this.confirmMemLimit) payload.mem_limit = this.confirmMemLimit
         }
         const res = await axios.post(`/servers/${this.currentServer}/batch/${action}`, payload, { headers: this.getAuthHeaders() })
         const data = res.data
@@ -593,7 +587,7 @@ export default {
       const count = this.selectedIds.length
       this.confirmMsg = `确定批量${actionNames[action]} ${count} 个实例？${action === 'reset' ? '所有数据将被清除！' : action === 'purge' ? '容器和数据目录将被一并删除，不可恢复！' : ''}`
       this.confirmShowNginxOption = action === 'reset' && this.isLocalServer() && this.nginxInfo.exists && this.nginxInfo.status === 'running'
-      this.confirmShowAdvanced = action === 'reset' && this.isLocalServer()
+      this.confirmShowAdvanced = action === 'reset'
       this.confirmInstId = null
       this.confirmUseNginx = true
       this.confirmImage = ''

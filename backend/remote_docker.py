@@ -70,14 +70,23 @@ def list_instances(server):
     return instances
 
 
-def create_instance(server, num, port=None):
+def create_instance(server, num, port=None, image=None, cpu_limit=None, mem_limit=None):
     """Create a qinglong instance on remote server"""
     if port is None:
         port = 5700 + num
     name = f'qinglong{num}'
     data_dir = f'/home/docker/qinglong/qinglong{num}'
+    image = image or 'whyour/qinglong:latest'
 
-    cmd = f'mkdir -p {data_dir} && docker run -d --name {name} --restart always -p {port}:5700 -v {data_dir}:/ql/data whyour/qinglong:latest'
+    # 构建 docker run 命令
+    opts = f'--restart always -p {port}:5700 -v {data_dir}:/ql/data'
+    if cpu_limit:
+        cpus = cpu_limit / 1000000000
+        opts += f' --cpus={cpus}'
+    if mem_limit:
+        opts += f' --memory={mem_limit}'
+
+    cmd = f'mkdir -p {data_dir} && docker run -d --name {name} {opts} {image}'
     code, out, err = _ssh_exec(
         server['host'], server['port'],
         server['username'], server['password'],
@@ -156,22 +165,22 @@ def purge_instance(server, num):
     return {'name': name, 'status': 'purged', 'num': num}
 
 
-def reset_instance(server, num):
+def reset_instance(server, num, image=None, cpu_limit=None, mem_limit=None):
     """Reset a qinglong instance on remote server"""
     name = f'qinglong{num}'
     data_dir = f'/home/docker/qinglong/qinglong{num}'
     port = 5700 + num
+    image = image or 'whyour/qinglong:latest'
 
-    # Get current port
-    inspect_cmd = f"docker inspect {name} --format '{{{{range $k, $v := .NetworkSettings.Ports}}}}{{{{if $v}}}}{{{{$v}}}}{{{{end}}}}{{{{end}}}}'"
-    code, out, err = _ssh_exec(
-        server['host'], server['port'],
-        server['username'], server['password'],
-        inspect_cmd
-    )
+    # Remove and recreate with params
+    opts = f'--restart always -p {port}:5700 -v {data_dir}:/ql/data'
+    if cpu_limit:
+        cpus = cpu_limit / 1000000000
+        opts += f' --cpus={cpus}'
+    if mem_limit:
+        opts += f' --memory={mem_limit}'
 
-    # Remove and recreate
-    cmd = f'docker rm -f {name} && rm -rf {data_dir}/* && docker run -d --name {name} --restart always -p {port}:5700 -v {data_dir}:/ql/data whyour/qinglong:latest'
+    cmd = f'docker rm -f {name} && rm -rf {data_dir}/* && docker run -d --name {name} {opts} {image}'
     code, out, err = _ssh_exec(
         server['host'], server['port'],
         server['username'], server['password'],
