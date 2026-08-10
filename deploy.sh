@@ -20,11 +20,14 @@ echo "=== 等待服务启动 ==="
 sleep 5
 
 echo "=== 测试前端代理登录 ==="
-RESULT=$(curl -s -X POST http://localhost:8080/api/login -H "Content-Type: application/json" -d '{"username":"$PANEL_USERNAME","password":"$PANEL_PASSWORD"}')
-echo "前端代理登录测试: $RESULT"
+set -a
+source ./.env
+set +a
+HTTP_CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost/api/login -H "Content-Type: application/json" -d "{\"username\":\"${PANEL_USERNAME}\",\"password\":\"${PANEL_PASSWORD}\"}")
+echo "前端代理登录测试 HTTP 状态: $HTTP_CODE"
 
 echo "=== 测试引导页API ==="
-RESULT2=$(curl -s http://localhost:8080/api/nav 2>/dev/null | head -c 200)
-echo "引导页API测试: ${RESULT2}..."
+NAV_CODE=$(curl -s -o /dev/null -w '%{http_code}' http://localhost/api/nav)
+echo "引导页 API HTTP 状态: $NAV_CODE"
 
 echo "=== 部署完成 ==="

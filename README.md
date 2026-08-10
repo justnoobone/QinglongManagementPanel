@@ -29,8 +29,10 @@ docker compose up -d --build
 ### 3. 访问面板
 
 ```
-http://服务器IP:8080
+http://服务器IP
 ```
+
+为兼容旧书签，`http://服务器IP:8080` 仍然可用。
 
 默认账号密码见 `.env` 文件（`PANEL_USERNAME` / `PANEL_PASSWORD`），部署前务必修改。
 
@@ -40,21 +42,22 @@ http://服务器IP:8080
 
 - **Nginx** 监听 `80` 端口，负责前端静态资源和 `/api/`、`/socket.io/` 反向代理
 - **Flask** 监听 `127.0.0.1:5000`，处理所有 API 请求
-- Compose 对外暴露 `8080:80`
+- Compose 同时暴露 `80:80` 和 `8080:80`
 - 容器名固定为 `ql_manager`，用于 nginx 反向代理容器中的导航页回源
+- 面板通过 `/host/run/docker.sock` 访问 Docker；宿主机 `/run` 以只读方式挂载，避免 Docker daemon 重启后容器继续持有失效的 socket inode
 
 ## 新建实例默认配置
 
 通过面板新建青龙实例时，后端使用以下默认配置创建 Docker 容器：
 
-| 配置项 | 实例 0（ql0） | 实例 1 ~ 100（qinglongN） |
+| 配置项 | 实例 0（qinglong0） | 实例 1 ~ 100（qinglongN） |
 |--------|--------------|--------------------------|
 | **默认镜像** | `whyour/qinglong:debian-python3.10` | `whyour/qinglong:latest` |
 | **CPU 限制** | 1 核（`nano_cpus=1000000000`） | 1 核（`nano_cpus=1000000000`） |
 | **内存限制** | 1 GB（`mem_limit=1g`） | 1 GB（`mem_limit=1g`） |
-| **容器名** | `ql0` | `qinglong1`, `qinglong2`, ... |
+| **容器名** | `qinglong0` | `qinglong1`, `qinglong2`, ... |
 | **端口映射** | `5700:5700` | `5700+N:5700` |
-| **数据目录** | `/home/docker/qinglong/ql0` → `/ql/data` | `/home/docker/qinglong/qinglongN` → `/ql/data` |
+| **数据目录** | `/home/docker/qinglong/qinglong0` → `/ql/data` | `/home/docker/qinglong/qinglongN` → `/ql/data` |
 | **网络** | `ql_net`（bridge） | `ql_net`（bridge） |
 | **重启策略** | `unless-stopped` | `unless-stopped` |
 | **环境变量** | `QlBaseUrl=/ql0/`（如启用 nginx） | `QlBaseUrl=/qlN/`（如启用 nginx） |
@@ -81,16 +84,16 @@ http://服务器IP:8080
 
 | 方式 | URL 格式 | 说明 |
 |------|---------|------|
-| **代理访问** | `http://host:91/qlN/` | 需部署 Nginx 反向代理容器，实例需启用 nginx 选项 |
+| **代理访问** | `http://host:91/qlN/` | 需部署 Nginx 反向代理容器，实例需启用 nginx 选项；末尾斜杠可自动补全 |
 | **直连访问** | `http://host:5700+N/` | 直接访问容器端口，始终可用 |
 
-> 实例 0（ql0）不使用 Nginx 代理，仅支持直连访问。
+> 实例 0 同样可以启用 Nginx 代理；面板会兼容 `ql0` 和 `qinglong0` 两种历史容器名称。
 
 ## 目录挂载
 
 | 容器内路径 | 宿主机路径（默认） | 说明 |
 |-----------|-------------------|------|
-| `/var/run/docker.sock` | `/var/run/docker.sock` | Docker API 通信 |
+| `/host/run` | `/run`（只读） | 通过 `/host/run/docker.sock` 与 Docker API 通信，并兼容 daemon 重启后的 socket 更新 |
 | `/home/docker/qinglong` | `/home/docker/qinglong` | 青龙实例数据目录 |
 | `/qlpanel/data` | `./data` | 面板数据（服务器列表、实例元数据） |
 | `/home/docker/nginx` | `/home/docker/nginx` | Nginx 反向代理配置和日志 |
@@ -111,10 +114,11 @@ http://服务器IP:8080
 | `QL_HOST_DATA_PATH` | `/home/docker/qinglong` | 青龙数据目录（宿主机路径） |
 | `PANEL_HOST_DATA_PATH` | `./data` | 面板数据目录（宿主机路径） |
 | `NGINX_HOST_PATH` | `/home/docker/nginx` | Nginx 配置目录（宿主机路径） |
+| `DOCKER_HOST` | `unix:///host/run/docker.sock` | 面板容器连接宿主机 Docker 的 socket 地址 |
 
 ## 注意事项
 
-- 面板需要挂载 `/var/run/docker.sock`，等同于赋予面板容器主机级别的 Docker 控制权限
+- 面板通过宿主机 Docker socket 管理容器，等同于赋予面板容器主机级别的 Docker 控制权限
 - **不要直接暴露到公网**，至少应使用强密码、随机密钥，并放在可信网络或额外反向代理认证之后
 - 远程 SSH 密码使用 Fernet 加密存储（密钥由 JWT_SECRET_KEY 派生）
 - 彻底删除（purge）操作会同时删除容器和数据目录，不可恢复，请谨慎操作

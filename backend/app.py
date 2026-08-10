@@ -10,6 +10,7 @@ import remote_docker
 from auth import login, check_rate_limit
 import json
 import os
+import html as html_lib
 
 
 def create_app():
@@ -69,106 +70,114 @@ def create_app():
         """动态生成 nginx 引导页，列出所有运行中的青龙实例"""
         try:
             instances = list_instances()
-            # 只显示运行中的实例（ql0 不走 nginx 代理，也列出）
-            running = [i for i in instances if i['status'] == 'running']
+            metadata = load_metadata()
+            running = [
+                instance for instance in instances
+                if instance['status'] == 'running'
+                and metadata.get(metadata_key('local', instance['id']), {}).get('use_nginx', True)
+            ]
             running.sort(key=lambda x: x['id'])
 
-            # 获取当前请求的 hostname
-            host = request.host
-
-            # 生成实例链接 HTML
             links_html = ''
             for inst in running:
-                # 所有实例都通过 nginx 代理访问（QlBaseUrl 模式）
-                links_html += f'<a href="/ql{inst["id"]}/" class="instance-link"><span class="instance-name">Qinglong {inst["id"]}</span><span class="instance-port">/ql{inst["id"]}/</span></a>\n'
+                name = html_lib.escape(inst['name'])
+                links_html += f'''<a href="/ql{inst["id"]}/" class="instance-link">
+<span class="instance-main"><span class="status-dot"></span><span><strong>{name}</strong><small>Qinglong instance {inst["id"]}</small></span></span>
+<span class="instance-path">/ql{inst["id"]}/ <span aria-hidden="true">&#8599;</span></span>
+</a>\n'''
 
             if not running:
-                links_html = '<div class="empty-msg">暂无运行中的实例</div>'
+                links_html = '<div class="empty-msg"><strong>暂无在线实例</strong><span>请打开管理控制台检查 Docker 连接与容器状态。</span></div>'
+
+            hostname = request.host.split(':', 1)[0]
+            panel_url = f'http://{hostname}/'
 
             html = f'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Qinglong Panels</title>
+<title>青龙实例入口</title>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
+* {{ box-sizing: border-box; letter-spacing: 0; }}
 body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    text-align: center;
-    background: #f0f2f5;
+    margin: 0;
     min-height: 100vh;
-    padding: 40px 20px;
+    color: #1d1d1f;
+    background: #f5f5f7;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 }}
-h1 {{
-    font-size: 28px;
-    color: #1a1a1a;
-    margin-bottom: 8px;
-    font-weight: 600;
-}}
-.subtitle {{
-    color: #999;
-    font-size: 14px;
-    margin-bottom: 30px;
-}}
-.instance-list {{
-    max-width: 500px;
-    margin: 0 auto;
+.topbar {{
+    height: 64px;
     display: flex;
-    flex-direction: column;
-    gap: 10px;
-}}
-.instance-link {{
-    display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 14px 20px;
-    background: #fff;
-    border-radius: 8px;
-    text-decoration: none;
-    color: #333;
-    font-size: 16px;
-    border: 1px solid #e8e8e8;
-    transition: all 0.2s;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    justify-content: space-between;
+    padding: 0 max(20px, calc((100vw - 760px) / 2));
+    background: rgba(250,250,252,.88);
+    border-bottom: 1px solid rgba(0,0,0,.08);
+    backdrop-filter: saturate(180%) blur(18px);
 }}
-.instance-link:hover {{
-    border-color: #1890ff;
-    box-shadow: 0 2px 8px rgba(24,144,255,0.15);
-    transform: translateY(-1px);
+.brand {{ display: flex; align-items: center; gap: 10px; font-weight: 650; }}
+.brand-mark {{
+    width: 36px; height: 36px; display: grid; place-items: center;
+    color: #fff; background: #3a3a3c; border-radius: 8px; font-size: 14px;
 }}
-.instance-name {{
-    font-weight: 500;
+.console-link {{
+    padding: 8px 12px; color: #0071e3; background: #fff; border: 1px solid #dedee3;
+    border-radius: 7px; font-size: 12px; font-weight: 600; text-decoration: none;
 }}
-.instance-port {{
-    font-size: 13px;
-    color: #999;
+main {{ width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 56px 0; }}
+.eyebrow {{ margin: 0 0 8px; color: #98989d; font-size: 10px; font-weight: 700; }}
+h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
+.subtitle {{ margin: 8px 0 26px; color: #6e6e73; font-size: 14px; }}
+.instance-list {{ display: grid; gap: 10px; }}
+.instance-link {{
+    min-height: 74px; display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 16px; color: #1d1d1f; background: #fff;
+    border: 1px solid #e5e5e8; border-radius: 8px; text-decoration: none;
+    box-shadow: 0 1px 2px rgba(0,0,0,.03); transition: border-color .16s, transform .16s;
 }}
+.instance-link:hover {{ border-color: #8fc4f5; transform: translateY(-1px); }}
+.instance-main {{ display: flex; align-items: center; gap: 12px; min-width: 0; }}
+.instance-main strong, .instance-main small {{ display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.instance-main strong {{ font-size: 14px; }}
+.instance-main small {{ margin-top: 4px; color: #98989d; font-size: 11px; }}
+.status-dot {{ width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: #30a14e; box-shadow: 0 0 0 4px rgba(48,161,78,.12); }}
+.instance-path {{ color: #0071e3; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: nowrap; }}
 .empty-msg {{
-    color: #999;
-    font-size: 15px;
-    padding: 30px;
+    min-height: 180px; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 30px; color: #6e6e73; background: #fff;
+    border: 1px solid #e5e5e8; border-radius: 8px; text-align: center;
 }}
-.footer {{
-    margin-top: 40px;
-    color: #ccc;
-    font-size: 12px;
+.empty-msg strong {{ color: #1d1d1f; font-size: 15px; }}
+.empty-msg span {{ margin-top: 7px; font-size: 12px; }}
+.footer {{ margin: 24px 0 0; color: #98989d; font-size: 11px; text-align: center; }}
+@media (max-width: 560px) {{
+    .topbar {{ padding: 0 16px; }}
+    main {{ padding: 34px 0; }}
+    h1 {{ font-size: 25px; }}
+    .instance-path {{ font-size: 10px; }}
 }}
 </style>
 </head>
 <body>
-<h1>Qinglong Panels</h1>
-<p class="subtitle">共 {len(running)} 个实例运行中</p>
+<header class="topbar"><div class="brand"><span class="brand-mark">QL</span><span>青龙实例</span></div><a class="console-link" href="{panel_url}">管理控制台</a></header>
+<main>
+<p class="eyebrow">QINGLONG PANELS</p>
+<h1>选择一个运行实例</h1>
+<p class="subtitle">当前共有 {len(running)} 个实例在线</p>
 <div class="instance-list">
 {links_html}
 </div>
-<p class="footer">自动检测运行中的实例 · 实时更新</p>
+<p class="footer">状态来自本机 Docker 服务</p>
+</main>
 </body>
 </html>'''
 
             return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
         except Exception as e:
-            return f'<html><body><h2>加载失败: {str(e)}</h2></body></html>', 500, {'Content-Type': 'text/html; charset=utf-8'}
+            error = html_lib.escape(str(e))
+            return f'<html><body><h2>加载失败: {error}</h2></body></html>', 500, {'Content-Type': 'text/html; charset=utf-8'}
 
     # ========== 健康检查 ==========
     @app.route('/api/health')

@@ -4,6 +4,7 @@ services:
     container_name: ql_manager
     restart: unless-stopped
     ports:
+      - "80:80"
       - "8080:80"
     environment:
       PANEL_USERNAME: "${PANEL_USERNAME:-admin}"
@@ -13,8 +14,11 @@ services:
       QL_DATA_PATH: "${QL_DATA_PATH:-/home/docker/qinglong}"
       QL_IMAGE: "${QL_IMAGE:-whyour/qinglong:latest}"
       PANEL_DATA_DIR: /qlpanel/data
+      DOCKER_HOST: "${DOCKER_HOST:-unix:///host/run/docker.sock}"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount the parent directory so a Docker daemon restart does not leave
+      # the panel attached to a stale Unix socket inode.
+      - /run:/host/run:ro
       - ${QL_HOST_DATA_PATH:-/home/docker/qinglong}:${QL_DATA_PATH:-/home/docker/qinglong}
       - ${PANEL_HOST_DATA_PATH:-./data}:/qlpanel/data
       - ${NGINX_HOST_PATH:-/home/docker/nginx}:/home/docker/nginx

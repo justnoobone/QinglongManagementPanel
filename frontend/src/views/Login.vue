@@ -1,28 +1,68 @@
 <template>
   <div class="login-page">
-    <div class="login-card">
-      <h1>青龙管理面板</h1>
-      <div class="form-group">
-        <label>用户名</label>
-        <input v-model="username" :disabled="loading || lockdown" placeholder="请输入用户名" @keyup.enter="doLogin">
+    <main class="login-card">
+      <div class="login-brand">
+        <div class="login-mark"><el-icon><Grid /></el-icon></div>
+        <p>QINGLONG CONTROL</p>
+        <h1>欢迎回来</h1>
+        <span>登录青龙多实例控制台</span>
       </div>
-      <div class="form-group">
-        <label>密码</label>
-        <input v-model="password" type="password" :disabled="loading || lockdown" placeholder="请输入密码" @keyup.enter="doLogin">
+
+      <form class="login-form" @submit.prevent="doLogin">
+        <label class="field login-field">
+          <span>用户名</span>
+          <div class="input-with-icon">
+            <el-icon><User /></el-icon>
+            <input
+              v-model.trim="username"
+              :disabled="loading || lockdown"
+              autocomplete="username"
+              autofocus
+              placeholder="输入用户名"
+            />
+          </div>
+        </label>
+        <label class="field login-field">
+          <span>密码</span>
+          <div class="input-with-icon">
+            <el-icon><Lock /></el-icon>
+            <input
+              v-model="password"
+              type="password"
+              :disabled="loading || lockdown"
+              autocomplete="current-password"
+              placeholder="输入密码"
+            />
+          </div>
+        </label>
+
+        <div v-if="error" class="notice notice-error login-error">
+          <el-icon><Warning /></el-icon>
+          <span>{{ error }}</span>
+        </div>
+
+        <button class="button button-primary login-button" type="submit" :disabled="loading || lockdown">
+          <span>{{ lockdown ? `请稍候 ${lockdownCountdown}s` : (loading ? '正在登录' : '登录控制台') }}</span>
+          <el-icon v-if="!loading && !lockdown"><Right /></el-icon>
+          <span v-else-if="loading" class="button-spinner"></span>
+        </button>
+      </form>
+
+      <div class="login-footer">
+        <span class="presence-dot online"></span>
+        <span>Secure local console</span>
       </div>
-      <div v-if="error" class="error-msg">{{ error }}</div>
-      <button class="btn-login" :disabled="loading || lockdown" @click="doLogin">
-        {{ lockdown ? `锁定中 (${lockdownCountdown}s)` : (loading ? '登录中...' : '登录') }}
-      </button>
-    </div>
+    </main>
   </div>
 </template>
 
 <script>
 import axios from 'axios'
+import { Grid, Lock, Right, User, Warning } from '@element-plus/icons-vue'
 
 export default {
   name: 'Login',
+  components: { Grid, Lock, Right, User, Warning },
   data() {
     return {
       username: '',
@@ -62,29 +102,25 @@ export default {
       this.loading = true
       this.error = ''
       try {
-        const res = await axios.post('/login', {
-          username: this.username,
-          password: this.password,
-        })
-        localStorage.setItem('token', res.data.token)
+        const response = await axios.post('/login', { username: this.username, password: this.password })
+        localStorage.setItem('token', response.data.token)
         this.$router.push('/')
-      } catch (e) {
-        const data = e.response?.data || {}
-        if (e.response?.status === 429) {
+      } catch (error) {
+        const data = error.response?.data || {}
+        if (error.response?.status === 429) {
           const match = data.error?.match(/(\d+)/)
-          const seconds = match ? parseInt(match[1], 10) : 300
           this.error = data.error || '登录失败次数过多，请稍后重试'
-          this.startLockdown(seconds)
-        } else if (e.response) {
+          this.startLockdown(match ? Number(match[1]) : 300)
+        } else if (error.response) {
           this.error = data.error || '登录失败'
-          if (data.attempts_left !== undefined && data.attempts_left <= 2 && data.attempts_left > 0) {
-            this.error += `（还剩 ${data.attempts_left} 次尝试机会）`
+          if (data.attempts_left > 0 && data.attempts_left <= 2) {
+            this.error += `（还剩 ${data.attempts_left} 次尝试）`
           } else if (data.attempts_left === 0) {
             this.error = '登录失败次数过多，请稍后重试'
             this.startLockdown(5)
           }
         } else {
-          this.error = '网络错误'
+          this.error = '无法连接到控制台服务'
         }
       } finally {
         this.loading = false
@@ -93,80 +129,3 @@ export default {
   },
 }
 </script>
-
-<style scoped>
-.login-page {
-  min-height: 100vh;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.login-card {
-  width: 380px;
-  padding: 40px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
-}
-
-.login-card h1 {
-  margin: 0 0 30px;
-  text-align: center;
-  color: #1a1a1a;
-  font-size: 24px;
-}
-
-.form-group {
-  margin-bottom: 16px;
-}
-
-.form-group label {
-  display: block;
-  margin-bottom: 6px;
-  color: #333;
-  font-size: 14px;
-}
-
-.form-group input {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 10px 12px;
-  border: 1px solid #d9d9d9;
-  border-radius: 6px;
-  font-size: 14px;
-}
-
-.form-group input:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
-}
-
-.error-msg {
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background: #fff2f0;
-  color: #ff4d4f;
-  border-radius: 4px;
-  font-size: 13px;
-}
-
-.btn-login {
-  width: 100%;
-  margin-top: 8px;
-  padding: 10px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #fff;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 16px;
-}
-
-.btn-login:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-</style>

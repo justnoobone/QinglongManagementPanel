@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
+import './theme.css'
 import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
 import App from './App.vue'
 import router from './router'
@@ -23,9 +24,10 @@ axios.interceptors.request.use(config => {
 axios.interceptors.response.use(
   response => response,
   error => {
-    if (error.response && error.response.status === 401) {
+    const isLoginRequest = error.config?.url === '/login'
+    if (error.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('token')
-      window.location.href = '/login'
+      router.push('/login')
     }
     return Promise.reject(error)
   }

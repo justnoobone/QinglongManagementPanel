@@ -2,40 +2,66 @@ import docker
 import os
 import shutil
 import json
+import re
 
 # Docker 客户端 - 延迟初始化
 _client = None
 
+INSTANCE_NAME_RE = re.compile(r"^(?:qinglong|ql)(\d+)$")
+
 
 def get_client():
-    """获取 Docker 客户端（延迟初始化）"""
+    """获取 Docker 客户端，并在 daemon/socket 重启后自动重连。"""
     global _client
-    if _client is None:
+    if _client is not None:
         try:
-            _client = docker.from_env()
-        except Exception as e:
-            raise RuntimeError(f"无法连接 Docker: {str(e)}")
+            _client.ping()
+            return _client
+        except Exception:
+            try:
+                _client.close()
+            except Exception:
+                pass
+            _client = None
+
+    try:
+        _client = docker.from_env(timeout=10)
+        _client.ping()
+    except Exception as e:
+        _client = None
+        raise RuntimeError(f"无法连接 Docker: {str(e)}")
     return _client
 
 
 def get_container_name(num):
     """生成容器名称
-    - 实例 0: ql0（匹配原始 docker-compose 设计）
-    - 实例 1+: qinglong{N}
+    - 所有实例统一使用 qinglong{N}
+    - find_container 仍兼容历史 ql{N} 命名
     """
-    if num == 0:
-        return "ql0"
     return f"qinglong{num}"
+
+
+def get_container_candidates(num):
+    """返回兼容历史部署的容器名称候选。"""
+    return [f"qinglong{num}", f"ql{num}"]
+
+
+def find_container(num, client=None):
+    """按实例编号查找容器，兼容 qlN 与 qinglongN。"""
+    client = client or get_client()
+    for name in get_container_candidates(num):
+        try:
+            return client.containers.get(name)
+        except docker.errors.NotFound:
+            continue
+    return None
 
 
 def get_data_dir(num):
     """获取数据目录
-    - 实例 0: /home/docker/qinglong/ql0（匹配原始 docker-compose 设计）
-    - 实例 1+: /home/docker/qinglong/qinglong{N}
+    - 所有实例统一使用 /home/docker/qinglong/qinglong{N}
     """
     base = os.environ.get('QL_DATA_PATH', '/home/docker/qinglong')
-    if num == 0:
-        return f"{base}/ql0"
     return f"{base}/qinglong{num}"
 
 
@@ -55,26 +81,42 @@ def get_image(num):
 
 
 def list_instances():
-    """列出所有青龙实例"""
+    """列出所有青龙实例，使用单次 Docker 查询避免逐个探测。"""
     client = get_client()
-    result = []
+    instances = {}
 
-    for i in range(0, 101):
-        name = get_container_name(i)
-        try:
-            container = client.containers.get(name)
-            result.append({
-                "id": i,
-                "name": name,
-                "status": container.status,
-                "port": get_port(i)
-            })
-        except docker.errors.NotFound:
-            pass
-        except Exception as e:
-            print(f"Error getting container {name}: {e}")
+    for container in client.containers.list(all=True):
+        match = INSTANCE_NAME_RE.match(container.name)
+        if not match:
+            continue
 
-    return result
+        num = int(match.group(1))
+        if num < 0 or num > 100:
+            continue
+
+        port = get_port(num)
+        port_bindings = container.attrs.get('NetworkSettings', {}).get('Ports') or {}
+        host_bindings = port_bindings.get('5700/tcp') or []
+        if host_bindings and host_bindings[0].get('HostPort'):
+            try:
+                port = int(host_bindings[0]['HostPort'])
+            except (TypeError, ValueError):
+                pass
+
+        item = {
+            "id": num,
+            "name": container.name,
+            "status": container.status,
+            "health": container.attrs.get('State', {}).get('Health', {}).get('Status', ''),
+            "port": port,
+            "image": container.image.tags[0] if container.image.tags else container.image.short_id,
+        }
+
+        existing = instances.get(num)
+        if existing is None or (existing['status'] != 'running' and item['status'] == 'running'):
+            instances[num] = item
+
+    return [instances[num] for num in sorted(instances)]
 
 
 def create_instance(num, use_nginx=True, image=None, cpu_limit=None, mem_limit=None):
@@ -126,40 +168,40 @@ def create_instance(num, use_nginx=True, image=None, cpu_limit=None, mem_limit=N
 def start_instance(num):
     """启动青龙实例"""
     client = get_client()
-    name = get_container_name(num)
     try:
-        container = client.containers.get(name)
+        container = find_container(num, client)
+        if container is None:
+            raise RuntimeError(f"实例 {num} 不存在")
         container.start()
-    except docker.errors.NotFound:
-        raise RuntimeError(f"容器 {name} 不存在")
     except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
         raise RuntimeError(f"启动实例失败: {str(e)}")
 
 
 def stop_instance(num):
     """停止青龙实例"""
     client = get_client()
-    name = get_container_name(num)
     try:
-        container = client.containers.get(name)
+        container = find_container(num, client)
+        if container is None:
+            raise RuntimeError(f"实例 {num} 不存在")
         container.stop(timeout=10)
-    except docker.errors.NotFound:
-        raise RuntimeError(f"容器 {name} 不存在")
     except Exception as e:
+        if isinstance(e, RuntimeError):
+            raise
         raise RuntimeError(f"停止实例失败: {str(e)}")
 
 
 def delete_instance(num):
     """删除青龙实例（仅删除容器，保留数据）"""
     client = get_client()
-    name = get_container_name(num)
     try:
-        container = client.containers.get(name)
-        container.remove(force=True)
-    except docker.errors.NotFound:
-        pass
+        container = find_container(num, client)
+        if container is not None:
+            container.remove(force=True)
     except Exception as e:
-        print(f"Error deleting container {name}: {e}")
+        print(f"Error deleting instance {num}: {e}")
 
     # 更新 nginx 配置
     _update_nginx_config()
@@ -168,17 +210,15 @@ def delete_instance(num):
 def purge_instance(num):
     """彻底删除青龙实例（删除容器 + 数据目录）"""
     client = get_client()
-    name = get_container_name(num)
     data_dir = get_data_dir(num)
 
     # 1. 删除容器
     try:
-        container = client.containers.get(name)
-        container.remove(force=True)
-    except docker.errors.NotFound:
-        pass
+        container = find_container(num, client)
+        if container is not None:
+            container.remove(force=True)
     except Exception as e:
-        print(f"Error deleting container {name}: {e}")
+        print(f"Error deleting instance {num}: {e}")
 
     # 2. 删除数据目录
     if os.path.exists(data_dir):
@@ -212,12 +252,11 @@ def reset_instance(num, use_nginx=True, image=None, cpu_limit=None, mem_limit=No
 def get_logs(num, tail=200):
     """获取容器日志"""
     client = get_client()
-    name = get_container_name(num)
     try:
-        container = client.containers.get(name)
+        container = find_container(num, client)
+        if container is None:
+            return "容器不存在"
         return container.logs(tail=tail, timestamps=True).decode("utf-8")
-    except docker.errors.NotFound:
-        return "容器不存在"
     except Exception as e:
         return f"获取日志失败: {str(e)}"
 
@@ -327,13 +366,17 @@ def _generate_nginx_config():
             if not nginx_status[num]:
                 continue  # 明确禁用了 nginx 代理
 
-        # 获取容器名称（作为 Docker 网络中的主机名）
-        container_name = get_container_name(num)
+        # 使用实际容器名称，兼容 ql0 / qinglong0 两种历史命名。
+        container_name = inst['name']
 
         # 关键：proxy_pass 不带尾部斜杠，保留完整的请求 URI
         # 这样 /ql1/api/login 会被转发为 http://qinglong1:5700/ql1/api/login
         # 而 QlBaseUrl=/ql1/ 让青龙面板知道处理 /ql1/ 前缀下的请求
-        block = f"""    location /ql{num}/ {{
+        block = f"""    location = /ql{num} {{
+        return 308 /ql{num}/;
+    }}
+
+    location /ql{num}/ {{
         proxy_pass http://{container_name}:5700;
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -363,6 +406,7 @@ def _generate_nginx_config():
 server {{
     listen 80;
     server_name _;
+    absolute_redirect off;
 
     # Docker embedded DNS resolver
     resolver 127.0.0.11 valid=10s;
