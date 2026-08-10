@@ -1,0 +1,8 @@
+services:
+  ql-panel:
+    networks:
+      - ql_net
+networks:
+  ql_net:
+    external: true
+    name: ql_net
