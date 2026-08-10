@@ -4,6 +4,8 @@ import shutil
 import json
 import re
 
+from nginx_config import generate_nginx_config
+
 # Docker 客户端 - 延迟初始化
 _client = None
 
@@ -111,6 +113,13 @@ def list_instances():
             "port": port,
             "image": container.image.tags[0] if container.image.tags else container.image.short_id,
         }
+
+        # Qinglong only recognises the case-sensitive QlBaseUrl variable. Older
+        # containers may have QL_BASE_PATH instead, which must use the legacy
+        # strip-prefix Nginx route to avoid a blank page.
+        environment = container.attrs.get('Config', {}).get('Env') or []
+        env_map = dict(item.split('=', 1) for item in environment if '=' in item)
+        item['ql_base_url'] = env_map.get('QlBaseUrl', '/')
 
         existing = instances.get(num)
         if existing is None or (existing['status'] != 'running' and item['status'] == 'running'):
@@ -340,88 +349,22 @@ def _ensure_ql_net(client):
 
 
 def _generate_nginx_config():
-    """生成 nginx 配置内容
-
-    关键设计：
-    1. 使用 QlBaseUrl 模式：每个青龙实例设置 QlBaseUrl=/ql{N}/
-    2. proxy_pass 不剥离子路径前缀（因为 QlBaseUrl 需要它）
-    3. 不使用 sub_filter（QlBaseUrl 已处理前端路径问题）
-    4. 静态生成每个实例的 location 块（而非正则，更可靠）
-    """
+    """生成兼容新旧 Qinglong 实例的 nginx 配置内容。"""
     try:
         instances = list_instances()
     except Exception:
         instances = []
 
-    # 获取每个实例的 nginx 代理启用状态
     nginx_status = _get_nginx_enabled_instances()
-
-    # 为每个实例生成 location 块
-    location_blocks = []
-    for inst in instances:
-        num = inst['id']
-
-        # 检查该实例是否启用了 nginx 代理
-        if num in nginx_status:
-            if not nginx_status[num]:
-                continue  # 明确禁用了 nginx 代理
-
-        # 使用实际容器名称，兼容 ql0 / qinglong0 两种历史命名。
-        container_name = inst['name']
-
-        # 关键：proxy_pass 不带尾部斜杠，保留完整的请求 URI
-        # 这样 /ql1/api/login 会被转发为 http://qinglong1:5700/ql1/api/login
-        # 而 QlBaseUrl=/ql1/ 让青龙面板知道处理 /ql1/ 前缀下的请求
-        block = f"""    location = /ql{num} {{
-        return 308 /ql{num}/;
-    }}
-
-    location /ql{num}/ {{
-        proxy_pass http://{container_name}:5700;
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        proxy_buffering off;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }}"""
-        location_blocks.append(block)
-
-    locations = '\n\n'.join(location_blocks)
-
-    nav_comment = """# Reverse proxy for Qinglong panels
-# QlBaseUrl mode: each instance knows its subpath via QlBaseUrl=/ql{N}/
-# No sub_filter needed - QlBaseUrl handles all frontend path rewriting
-# Direct access: http://host:PORT/  (redirects to /ql{N}/ if QlBaseUrl set)
-# Proxy access: http://host:91/ql{N}/
-"""
-
-    return f"""{nav_comment}
-server {{
-    listen 80;
-    server_name _;
-    absolute_redirect off;
-
-    # Docker embedded DNS resolver
-    resolver 127.0.0.11 valid=10s;
-    resolver_timeout 5s;
-
-    # Dynamic nav page
-    location = / {{
-        proxy_pass http://ql_manager:5000/api/nav;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }}
-
-{locations}
-}}
-"""
+    enabled_ids = [
+        instance['id'] for instance in instances
+        if nginx_status.get(instance['id'], True)
+    ]
+    return generate_nginx_config(
+        instances,
+        enabled_ids=enabled_ids,
+        nav_upstream='ql_manager:5000/api/nav',
+    )
 
 
 def _ensure_nginx_config():

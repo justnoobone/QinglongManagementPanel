@@ -7,6 +7,14 @@ from config import JWT_SECRET_KEY, PANEL_DATA_DIR
 
 SERVERS_FILE = os.path.join(PANEL_DATA_DIR, 'servers.json')
 
+DEFAULT_REMOTE_NGINX = {
+    'nginx_image': 'nginx:1.29.7-alpine',
+    'nginx_port': 91,
+    'nginx_path': '/home/docker/nginx',
+    'nginx_container': 'nginx',
+    'nginx_network': 'ql_net',
+}
+
 
 def base64_urlsafe_encode(data):
     return base64.urlsafe_b64encode(data)
@@ -56,6 +64,9 @@ def list_servers():
     result = []
     for s in servers:
         item = {k: v for k, v in s.items() if k != 'password'}
+        if s.get('type') == 'remote':
+            for key, value in DEFAULT_REMOTE_NGINX.items():
+                item.setdefault(key, value)
         if 'password' in s:
             item['has_password'] = bool(s['password'])
         result.append(item)
@@ -68,6 +79,8 @@ def add_server(name, host, port=22, username='root', password='', path='/home/do
 
     # Generate ID
     server_id = f"remote_{host}-{port}".replace('.', '-')
+    if any(item.get('id') == server_id for item in servers):
+        raise ValueError('该服务器已经存在')
 
     server = {
         "id": server_id,
@@ -77,6 +90,7 @@ def add_server(name, host, port=22, username='root', password='', path='/home/do
         "port": port,
         "username": username,
         "path": path,
+        **DEFAULT_REMOTE_NGINX,
     }
 
     # Encrypt password
@@ -95,14 +109,30 @@ def update_server(server_id, **kwargs):
 
     for i, s in enumerate(servers):
         if s['id'] == server_id:
-            if kwargs.get('name'):
-                s['name'] = kwargs['name']
-            if kwargs.get('host'):
-                s['host'] = kwargs['host']
-            if kwargs.get('port'):
-                s['port'] = kwargs['port']
-            if kwargs.get('username'):
-                s['username'] = kwargs['username']
+            if s.get('type') == 'local':
+                if kwargs.get('name'):
+                    s['name'] = str(kwargs['name']).strip()
+                servers[i] = s
+                save_servers(servers)
+                return s
+
+            text_fields = (
+                'name', 'host', 'username', 'path', 'nginx_image',
+                'nginx_path', 'nginx_container', 'nginx_network',
+            )
+            for field in text_fields:
+                if field in kwargs and str(kwargs[field]).strip():
+                    s[field] = str(kwargs[field]).strip()
+            if 'port' in kwargs and kwargs['port'] not in (None, ''):
+                port = int(kwargs['port'])
+                if port < 1 or port > 65535:
+                    raise ValueError('SSH 端口必须在 1 到 65535 之间')
+                s['port'] = port
+            if 'nginx_port' in kwargs and kwargs['nginx_port'] not in (None, ''):
+                nginx_port = int(kwargs['nginx_port'])
+                if nginx_port < 1 or nginx_port > 65535:
+                    raise ValueError('Nginx 端口必须在 1 到 65535 之间')
+                s['nginx_port'] = nginx_port
             if kwargs.get('password'):
                 f = _get_fernet()
                 s['password'] = f.encrypt(kwargs['password'].encode()).decode()
@@ -131,8 +161,11 @@ def get_server(server_id):
 
     for s in servers:
         if s['id'] == server_id:
+            s = dict(s)
             if s.get('type') == 'local':
                 return s
+            for key, value in DEFAULT_REMOTE_NGINX.items():
+                s.setdefault(key, value)
             # Decrypt password
             if s.get('password'):
                 try:

@@ -15,6 +15,14 @@
         <button class="icon-button" title="刷新实例" aria-label="刷新实例" @click="refreshAll">
           <el-icon><Refresh /></el-icon>
         </button>
+        <button
+          class="icon-button"
+          :title="theme === 'dark' ? '切换浅色主题' : '切换深色主题'"
+          :aria-label="theme === 'dark' ? '切换浅色主题' : '切换深色主题'"
+          @click="toggleTheme"
+        >
+          <el-icon><Sunny v-if="theme === 'dark'" /><Moon v-else /></el-icon>
+        </button>
         <button class="button button-primary" @click="showCreate = true">
           <el-icon><Plus /></el-icon>
           <span>新建实例</span>
@@ -38,18 +46,28 @@
             @keyup.enter="switchServer(server.id)"
           >
             <span :class="['presence-dot', server.online === false ? 'offline' : 'online']"></span>
-            <span>{{ server.name }}</span>
+            <span class="server-tab-name">{{ server.name }}</span>
             <span v-if="server.type === 'local'" class="tab-meta">LOCAL</span>
-            <button
-              v-if="server.type === 'remote'"
-              class="tab-remove"
-              title="删除服务器"
-              type="button"
-              aria-label="删除服务器"
-              @click.stop="confirmDeleteServer(server)"
-            >
-              <el-icon><Close /></el-icon>
-            </button>
+            <span v-if="server.type === 'remote'" class="server-tab-actions">
+              <button
+                class="tab-action"
+                title="编辑服务器"
+                type="button"
+                aria-label="编辑服务器"
+                @click.stop="openEditServer(server)"
+              >
+                <el-icon><EditPen /></el-icon>
+              </button>
+              <button
+                class="tab-action danger"
+                title="删除服务器"
+                type="button"
+                aria-label="删除服务器"
+                @click.stop="confirmDeleteServer(server)"
+              >
+                <el-icon><Close /></el-icon>
+              </button>
+            </span>
           </div>
           <button class="server-add" @click="showAddServer = true">
             <el-icon><Plus /></el-icon>
@@ -57,7 +75,7 @@
           </button>
         </div>
 
-        <div v-if="isLocalServer()" class="nginx-control">
+        <div class="nginx-control">
           <div class="nginx-state" @click="loadNginxStatus">
             <span :class="['presence-dot', nginxStatusClass]"></span>
             <span class="nginx-label">Nginx</span>
@@ -69,7 +87,7 @@
             :title="nginxInfo.exists ? '启动 Nginx' : '部署 Nginx'"
             :aria-label="nginxInfo.exists ? '启动 Nginx' : '部署 Nginx'"
             :disabled="actionLoading"
-            @click="nginxAction(nginxInfo.exists ? 'start' : 'create')"
+            @click="handleNginxPrimaryAction"
           >
             <el-icon><VideoPlay /></el-icon>
           </button>
@@ -79,7 +97,7 @@
             title="停止 Nginx"
             aria-label="停止 Nginx"
             :disabled="actionLoading"
-            @click="nginxAction('stop')"
+            @click="requestNginxAction('stop')"
           >
             <el-icon><VideoPause /></el-icon>
           </button>
@@ -89,9 +107,19 @@
             title="重启 Nginx"
             aria-label="重启 Nginx"
             :disabled="actionLoading"
-            @click="nginxAction('restart')"
+            @click="requestNginxAction('restart')"
           >
             <el-icon><RefreshRight /></el-icon>
+          </button>
+          <button
+            v-if="!isLocalServer()"
+            class="icon-button icon-button-small"
+            title="一键配置 Nginx"
+            aria-label="一键配置 Nginx"
+            :disabled="actionLoading"
+            @click="openNginxSetup"
+          >
+            <el-icon><Setting /></el-icon>
           </button>
         </div>
       </section>
@@ -119,7 +147,7 @@
             <p>反向代理</p>
             <strong class="summary-word">{{ nginxStatusText }}</strong>
           </div>
-          <span class="summary-caption">端口 91</span>
+          <span class="summary-caption">端口 {{ nginxPort }}</span>
         </article>
         <article class="summary-card">
           <div class="summary-icon graphite"><el-icon><Link /></el-icon></div>
@@ -193,7 +221,9 @@
                     <div class="instance-avatar">{{ inst.id }}</div>
                     <div>
                       <strong>{{ inst.name }}</strong>
-                      <span>{{ inst.image || `Qinglong ${inst.id}` }}</span>
+                      <span class="image-name" :title="inst.image || `Qinglong ${inst.id}`">
+                        {{ inst.image || `Qinglong ${inst.id}` }}
+                      </span>
                     </div>
                   </div>
                 </td>
@@ -207,7 +237,7 @@
                 <td>
                   <div class="access-links">
                     <a
-                      v-if="isLocalServer() && inst.use_nginx && nginxInfo.exists && nginxInfo.status === 'running'"
+                      v-if="inst.use_nginx && nginxInfo.exists && nginxInfo.status === 'running'"
                       :href="getNginxUrl(inst.id)"
                       target="_blank"
                       rel="noreferrer"
@@ -223,12 +253,16 @@
                   </div>
                 </td>
                 <td>
-                  <input
-                    class="inline-control inline-date"
+                  <el-date-picker
+                    class="inline-date-picker"
                     :class="{ invalid: inst.expired }"
                     type="date"
-                    :value="inst.end_date"
-                    @change="updateMetadata(inst, 'end_date', $event.target.value)"
+                    :model-value="inst.end_date || null"
+                    format="YYYY-MM-DD"
+                    value-format="YYYY-MM-DD"
+                    placeholder="选择日期"
+                    clearable
+                    @change="updateMetadata(inst, 'end_date', $event || '')"
                   />
                 </td>
                 <td>
@@ -338,7 +372,7 @@
         <div class="modal-body">
           <div class="form-grid two-columns">
             <label class="field"><span>实例编号</span><input v-model.number="createNum" type="number" min="0" placeholder="例如 2" /></label>
-            <label class="field"><span>到期日期</span><input v-model="createEndDate" type="date" /></label>
+            <label class="field date-field"><span>到期日期</span><el-date-picker v-model="createEndDate" type="date" format="YYYY-MM-DD" value-format="YYYY-MM-DD" placeholder="选择日期" clearable /></label>
           </div>
           <label class="field"><span>备注</span><input v-model="createNotes" type="text" placeholder="用途、负责人或客户名称" /></label>
           <label class="field"><span>镜像</span><input v-model="createImage" type="text" :placeholder="`默认 ${getDefaultImageHint()}`" /></label>
@@ -346,7 +380,7 @@
             <label class="field"><span>CPU 核数</span><input v-model="createCpuLimit" type="number" min="0.1" step="0.1" placeholder="1" /></label>
             <label class="field"><span>内存限制</span><input v-model="createMemLimit" type="text" placeholder="1g" /></label>
           </div>
-          <label v-if="isLocalServer() && nginxInfo.exists && nginxInfo.status === 'running'" class="toggle-row">
+          <label v-if="nginxInfo.exists && nginxInfo.status === 'running'" class="toggle-row">
             <span><strong>启用 Nginx 反代</strong><small>通过 :91/qlN/ 访问该实例</small></span>
             <input v-model="createUseNginx" type="checkbox" role="switch" />
           </label>
@@ -377,12 +411,90 @@
             <label class="field"><span>密码</span><input v-model="newServer.password" type="password" autocomplete="new-password" /></label>
           </div>
           <label class="field"><span>青龙数据路径</span><input v-model="newServer.path" placeholder="/home/docker/qinglong" /></label>
+          <label class="toggle-row">
+            <span><strong>添加后配置 Nginx</strong><small>仅打开配置窗口，不会自动部署或重启服务</small></span>
+            <input v-model="configureNginxAfterAdd" type="checkbox" role="switch" />
+          </label>
           <div v-if="addServerError" class="notice notice-error"><el-icon><Warning /></el-icon><span>{{ addServerError }}</span></div>
         </div>
         <div class="modal-footer">
           <button class="button button-secondary" @click="showAddServer = false">取消</button>
           <button class="button button-primary" :disabled="actionLoading" @click="doAddServer">
             <span>{{ actionLoading ? '连接中' : '测试并添加' }}</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="showEditServer" class="modal-backdrop" @click.self="showEditServer = false">
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-server-title">
+        <div class="modal-header">
+          <div><p class="section-kicker">SERVER SETTINGS</p><h2 id="edit-server-title">编辑远程服务器</h2></div>
+          <button class="icon-button icon-button-small" title="关闭" aria-label="关闭" @click="showEditServer = false"><el-icon><Close /></el-icon></button>
+        </div>
+        <div class="modal-body">
+          <label class="field"><span>服务器名称</span><input v-model="editServer.name" placeholder="服务器名称" /></label>
+          <div class="form-grid host-columns">
+            <label class="field"><span>主机地址</span><input v-model="editServer.host" placeholder="IP 或域名" /></label>
+            <label class="field"><span>SSH 端口</span><input v-model.number="editServer.port" type="number" min="1" max="65535" placeholder="22" /></label>
+          </div>
+          <div class="form-grid two-columns">
+            <label class="field"><span>用户名</span><input v-model="editServer.username" placeholder="root" /></label>
+            <label class="field"><span>新密码</span><input v-model="editServer.password" type="password" autocomplete="new-password" placeholder="留空则保持原密码" /></label>
+          </div>
+          <label class="field"><span>青龙数据路径</span><input v-model="editServer.path" placeholder="/home/docker/qinglong" /></label>
+          <div v-if="editServerError" class="notice notice-error"><el-icon><Warning /></el-icon><span>{{ editServerError }}</span></div>
+        </div>
+        <div class="modal-footer">
+          <button class="button button-secondary" @click="showEditServer = false">取消</button>
+          <button class="button button-primary" :disabled="actionLoading" @click="doEditServer">
+            <span>{{ actionLoading ? '保存中' : '保存修改' }}</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div v-if="showNginxSetup" class="modal-backdrop" @click.self="showNginxSetup = false">
+      <section class="modal modal-wide nginx-setup-modal" role="dialog" aria-modal="true" aria-labelledby="nginx-setup-title">
+        <div class="modal-header">
+          <div><p class="section-kicker">NGINX AUTOMATION</p><h2 id="nginx-setup-title">一键配置远程 Nginx</h2></div>
+          <button class="icon-button icon-button-small" title="关闭" aria-label="关闭" @click="showNginxSetup = false"><el-icon><Close /></el-icon></button>
+        </div>
+        <div class="modal-body nginx-setup-body">
+          <div class="nginx-target-card">
+            <span :class="['presence-dot', nginxStatusClass]"></span>
+            <div><strong>{{ currentServerName }}</strong><small>{{ getCurrentHost() }} · 当前 {{ nginxStatusText }}</small></div>
+          </div>
+          <div class="form-grid two-columns">
+            <label class="field"><span>Nginx 镜像版本</span><input v-model="nginxForm.image" placeholder="nginx:1.29.7-alpine" /></label>
+            <label class="field"><span>宿主机端口</span><input v-model.number="nginxForm.port" type="number" min="1" max="65535" placeholder="91" /></label>
+          </div>
+          <label class="field"><span>配置与日志目录</span><input v-model="nginxForm.path" placeholder="/home/docker/nginx" /></label>
+
+          <div class="deployment-steps" aria-label="部署内容">
+            <div><span>1</span><p><strong>拉取并校验</strong><small>拉取指定镜像，先执行 nginx -t</small></p></div>
+            <div><span>2</span><p><strong>接入容器网络</strong><small>将 Nginx 与青龙实例连接到 ql_net</small></p></div>
+            <div><span>3</span><p><strong>短暂切换</strong><small>新容器失败时自动尝试恢复原容器</small></p></div>
+          </div>
+
+          <div class="notice notice-warning nginx-warning">
+            <el-icon><Warning /></el-icon>
+            <span>部署只作用于 <strong>{{ currentServerName }}</strong>。切换已有 Nginx 时预计会有数秒不可访问，请在维护窗口执行。</span>
+          </div>
+
+          <div v-if="nginxPreview" class="config-preview-wrap">
+            <div class="config-preview-header"><span>生成配置预览</span><button class="notice-action" @click="nginxPreview = ''">收起</button></div>
+            <pre class="config-preview">{{ nginxPreview }}</pre>
+          </div>
+        </div>
+        <div class="modal-footer nginx-modal-footer">
+          <button class="button button-secondary" :disabled="actionLoading" @click="previewNginxConfig">
+            <el-icon><View /></el-icon><span>预览配置</span>
+          </button>
+          <span class="modal-footer-spacer"></span>
+          <button class="button button-secondary" @click="showNginxSetup = false">取消</button>
+          <button class="button button-primary" :disabled="actionLoading" @click="confirmNginxDeploy">
+            <el-icon><Setting /></el-icon><span>保存并部署</span>
           </button>
         </div>
       </section>
@@ -440,13 +552,18 @@ import {
   Delete,
   DeleteFilled,
   Document,
+  EditPen,
   Grid,
   Link,
   Monitor,
+  Moon,
   Plus,
   Refresh,
   RefreshRight,
+  Setting,
+  Sunny,
   SwitchButton,
+  View,
   VideoPause,
   VideoPlay,
   Warning,
@@ -462,19 +579,25 @@ export default {
     Delete,
     DeleteFilled,
     Document,
+    EditPen,
     Grid,
     Link,
     Monitor,
+    Moon,
     Plus,
     Refresh,
     RefreshRight,
+    Setting,
+    Sunny,
     SwitchButton,
+    View,
     VideoPause,
     VideoPlay,
     Warning,
   },
   data() {
     return {
+      theme: localStorage.getItem('ql-control-theme') || (window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
       servers: [],
       currentServer: 'local',
       instances: [],
@@ -495,6 +618,14 @@ export default {
       showAddServer: false,
       addServerError: '',
       newServer: { name: '', host: '', port: 22, username: 'root', password: '', path: '/home/docker/qinglong' },
+      configureNginxAfterAdd: false,
+      showEditServer: false,
+      editServerId: '',
+      editServerError: '',
+      editServer: { name: '', host: '', port: 22, username: 'root', password: '', path: '/home/docker/qinglong' },
+      showNginxSetup: false,
+      nginxPreview: '',
+      nginxForm: { image: 'nginx:1.29.7-alpine', port: 91, path: '/home/docker/nginx' },
       showLogsDialog: false,
       logId: null,
       logContent: '',
@@ -521,13 +652,17 @@ export default {
       return this.servers.find((server) => server.id === this.currentServer)?.name || '本机'
     },
     nginxStatusText() {
-      if (!this.isLocalServer()) return '不可用'
       if (!this.nginxInfo.exists) return '未部署'
       return this.nginxInfo.status === 'running' ? '运行中' : '已停止'
     },
     nginxStatusClass() {
       if (!this.nginxInfo.exists) return 'offline'
       return this.nginxInfo.status === 'running' ? 'online' : 'warning'
+    },
+    nginxPort() {
+      if (this.nginxInfo.configured_port) return this.nginxInfo.configured_port
+      const mapped = this.nginxInfo.ports?.find((port) => String(port).endsWith(':80'))
+      return mapped ? String(mapped).split(':')[0] : 91
     },
     panelUrl() {
       return `${window.location.protocol}//${window.location.hostname}/`
@@ -537,9 +672,19 @@ export default {
     },
   },
   created() {
+    this.applyTheme()
     this.loadServers()
   },
   methods: {
+    applyTheme() {
+      document.documentElement.dataset.theme = this.theme
+      document.documentElement.classList.toggle('dark', this.theme === 'dark')
+    },
+    toggleTheme() {
+      this.theme = this.theme === 'dark' ? 'light' : 'dark'
+      localStorage.setItem('ql-control-theme', this.theme)
+      this.applyTheme()
+    },
     getAuthHeaders() {
       return { Authorization: `Bearer ${localStorage.getItem('token')}` }
     },
@@ -552,7 +697,7 @@ export default {
     },
     refreshAll() {
       this.loadInstances()
-      if (this.isLocalServer()) this.loadNginxStatus()
+      this.loadNginxStatus()
     },
     getCurrentHost() {
       if (this.isLocalServer()) return window.location.hostname
@@ -562,7 +707,7 @@ export default {
       return `http://${this.getCurrentHost()}:${port}/`
     },
     getNginxUrl(id) {
-      return `http://${window.location.hostname}:91/ql${id}/`
+      return `http://${this.getCurrentHost()}:${this.nginxPort}/ql${id}/`
     },
     isLocalServer() {
       return this.currentServer === 'local'
@@ -592,18 +737,17 @@ export default {
           this.currentServer = this.servers[0]?.id || 'local'
         }
         await this.loadInstances()
-        if (this.isLocalServer()) await this.loadNginxStatus()
+        await this.loadNginxStatus()
       } catch (error) {
         if (error.response?.status === 401) this.logout()
         else this.error = error.response?.data?.error || '服务器列表加载失败'
       }
     },
-    switchServer(serverId) {
+    async switchServer(serverId) {
       this.currentServer = serverId
       this.error = ''
       this.clearSelection()
-      this.loadInstances()
-      if (this.isLocalServer()) this.loadNginxStatus()
+      await Promise.all([this.loadInstances(), this.loadNginxStatus()])
     },
     async doAddServer() {
       this.addServerError = ''
@@ -613,13 +757,49 @@ export default {
       }
       this.actionLoading = true
       try {
-        await axios.post('/servers', this.newServer, { headers: this.getAuthHeaders() })
+        const shouldConfigureNginx = this.configureNginxAfterAdd
+        const response = await axios.post('/servers', this.newServer, { headers: this.getAuthHeaders() })
+        const addedServerId = response.data?.id
         this.showAddServer = false
         this.newServer = { name: '', host: '', port: 22, username: 'root', password: '', path: '/home/docker/qinglong' }
+        this.configureNginxAfterAdd = false
         this.notify('服务器已添加')
         await this.loadServers()
+        if (addedServerId) await this.switchServer(addedServerId)
+        if (shouldConfigureNginx && addedServerId) this.openNginxSetup()
       } catch (error) {
         this.addServerError = error.response?.data?.error || '添加失败'
+      } finally {
+        this.actionLoading = false
+      }
+    },
+    openEditServer(server) {
+      this.editServerId = server.id
+      this.editServerError = ''
+      this.editServer = {
+        name: server.name || '',
+        host: server.host || '',
+        port: server.port || 22,
+        username: server.username || 'root',
+        password: '',
+        path: server.path || '/home/docker/qinglong',
+      }
+      this.showEditServer = true
+    },
+    async doEditServer() {
+      this.editServerError = ''
+      if (!this.editServer.name || !this.editServer.host) {
+        this.editServerError = '服务器名称和地址不能为空'
+        return
+      }
+      this.actionLoading = true
+      try {
+        await axios.put(`/servers/${this.editServerId}`, this.editServer, { headers: this.getAuthHeaders() })
+        this.showEditServer = false
+        this.notify('服务器配置已更新')
+        await this.loadServers()
+      } catch (error) {
+        this.editServerError = error.response?.data?.error || '保存失败'
       } finally {
         this.actionLoading = false
       }
@@ -720,7 +900,7 @@ export default {
       const labels = { reset: '重置', delete: '删除', purge: '彻底删除' }
       const suffix = action === 'delete' ? '数据目录会保留。' : action === 'purge' ? '容器和数据目录都将删除且无法恢复。' : '现有数据将被清除。'
       this.confirmMsg = `确定${labels[action]}实例 ${this.instances.find((item) => item.id === id)?.name || id}？${suffix}`
-      this.confirmShowNginxOption = action === 'reset' && this.isLocalServer() && this.nginxInfo.status === 'running'
+      this.confirmShowNginxOption = action === 'reset' && this.nginxInfo.status === 'running'
       this.confirmShowAdvanced = action === 'reset'
       this.confirmInstId = id
       this.confirmUseNginx = true
@@ -768,7 +948,7 @@ export default {
       const labels = { reset: '重置', delete: '删除', purge: '彻底删除' }
       const suffix = action === 'purge' ? '容器与数据目录都将被删除且无法恢复。' : action === 'reset' ? '现有数据将被清除。' : ''
       this.confirmMsg = `确定批量${labels[action]} ${this.selectedIds.length} 个实例？${suffix}`
-      this.confirmShowNginxOption = action === 'reset' && this.isLocalServer() && this.nginxInfo.status === 'running'
+      this.confirmShowNginxOption = action === 'reset' && this.nginxInfo.status === 'running'
       this.confirmShowAdvanced = action === 'reset'
       this.confirmInstId = null
       this.confirmUseNginx = true
@@ -783,7 +963,81 @@ export default {
         const response = await axios.get(`/servers/${this.currentServer}/nginx`, { headers: this.getAuthHeaders() })
         this.nginxInfo = response.data
       } catch {
-        this.nginxInfo = { exists: false, status: 'not_found', image: '', ports: [] }
+        const server = this.servers.find((item) => item.id === this.currentServer)
+        this.nginxInfo = {
+          exists: false,
+          status: 'not_found',
+          image: server?.nginx_image || '',
+          ports: [],
+          configured_port: server?.nginx_port || 91,
+          configured_path: server?.nginx_path || '/home/docker/nginx',
+        }
+      }
+    },
+    handleNginxPrimaryAction() {
+      if (this.nginxInfo.exists) {
+        this.nginxAction('start')
+      } else if (this.isLocalServer()) {
+        this.nginxAction('create')
+      } else {
+        this.openNginxSetup()
+      }
+    },
+    requestNginxAction(action) {
+      if (this.isLocalServer()) {
+        this.nginxAction(action)
+        return
+      }
+      const label = action === 'stop' ? '停止' : '重启'
+      this.confirmMsg = `确定${label}“${this.currentServerName}”上的 Nginx？代理入口会短暂不可访问。`
+      this.confirmShowNginxOption = false
+      this.confirmShowAdvanced = false
+      this.confirmHandler = () => this.nginxAction(action)
+      this.confirmVisible = true
+    },
+    openNginxSetup() {
+      const server = this.servers.find((item) => item.id === this.currentServer) || {}
+      this.nginxForm = {
+        image: server.nginx_image || this.nginxInfo.image || 'nginx:1.29.7-alpine',
+        port: server.nginx_port || this.nginxInfo.configured_port || 91,
+        path: server.nginx_path || this.nginxInfo.configured_path || '/home/docker/nginx',
+      }
+      this.nginxPreview = ''
+      this.showNginxSetup = true
+    },
+    async previewNginxConfig() {
+      this.actionLoading = true
+      try {
+        const response = await axios.get(`/servers/${this.currentServer}/nginx/preview`, { headers: this.getAuthHeaders() })
+        this.nginxPreview = response.data.config || '# 暂无配置'
+      } catch (error) {
+        this.notify(error.response?.data?.error || '配置预览失败', 'error')
+      } finally {
+        this.actionLoading = false
+      }
+    },
+    confirmNginxDeploy() {
+      if (!this.nginxForm.image || !this.nginxForm.port || !this.nginxForm.path) {
+        this.notify('请填写完整的 Nginx 配置', 'warning')
+        return
+      }
+      this.confirmMsg = `将在“${this.currentServerName}”上拉取 ${this.nginxForm.image}，使用端口 ${this.nginxForm.port} 部署 Nginx。若已有同名容器，会在配置校验通过后短暂切换。确定继续？`
+      this.confirmShowNginxOption = false
+      this.confirmShowAdvanced = false
+      this.confirmHandler = () => this.deployRemoteNginx()
+      this.confirmVisible = true
+    },
+    async deployRemoteNginx() {
+      this.actionLoading = true
+      try {
+        const response = await axios.post(`/servers/${this.currentServer}/nginx/deploy`, this.nginxForm, { headers: this.getAuthHeaders() })
+        this.notify(response.data.msg || 'Nginx 已部署')
+        this.showNginxSetup = false
+        await this.loadServers()
+      } catch (error) {
+        throw error
+      } finally {
+        this.actionLoading = false
       }
     },
     async nginxAction(action) {

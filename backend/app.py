@@ -47,6 +47,17 @@ def create_app():
     def metadata_key(server_id, num):
         return f"{server_id}:{num}"
 
+    def disabled_nginx_ids(server_id):
+        prefix = f"{server_id}:"
+        disabled = []
+        for key, value in load_metadata().items():
+            if key.startswith(prefix) and value.get('use_nginx', True) is False:
+                try:
+                    disabled.append(int(key.split(':', 1)[1]))
+                except (TypeError, ValueError):
+                    continue
+        return disabled
+
     def _get_client_ip():
         """获取客户端真实 IP"""
         if request.headers.get('X-Forwarded-For'):
@@ -221,13 +232,18 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
         data = request.get_json(silent=True) or {}
         name = data.get('name', '').strip()
         host = data.get('host', '').strip()
-        port = data.get('port', 22)
+        try:
+            port = int(data.get('port', 22))
+        except (TypeError, ValueError):
+            return jsonify({"error": "SSH 端口格式不正确"}), 400
         username = data.get('username', 'root').strip()
         password = data.get('password', '')
         path = data.get('path', '/home/docker/qinglong').strip()
 
         if not name or not host:
             return jsonify({"error": "服务器名称和地址不能为空"}), 400
+        if port < 1 or port > 65535:
+            return jsonify({"error": "SSH 端口必须在 1 到 65535 之间"}), 400
 
         # 先测试连接
         ok, msg = remote_check(host, port, username, password)
@@ -236,7 +252,8 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
 
         try:
             result = add_server(name, host, port, username, password, path)
-            return jsonify(result), 201
+            public_result = next((item for item in list_servers() if item['id'] == result['id']), None)
+            return jsonify(public_result or {'id': result['id'], 'name': result['name']}), 201
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
@@ -247,8 +264,13 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
     def api_update_server(server_id):
         data = request.get_json(silent=True) or {}
         try:
-            update_server(server_id, **data)
-            return jsonify({"msg": "更新成功"})
+            result = update_server(server_id, **data)
+            if not result:
+                return jsonify({"error": "服务器不存在"}), 404
+            public_result = next((item for item in list_servers() if item['id'] == server_id), None)
+            return jsonify({"msg": "更新成功", "server": public_result})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -295,7 +317,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                 inst['start_date'] = meta.get('start_date', '')
                 inst['end_date'] = meta.get('end_date', '')
                 inst['notes'] = meta.get('notes', '')
-                # use_nginx: 默认 True（兼容历史数据），仅本地服务器有效
+                # use_nginx 默认 True，远程 Nginx 部署时也使用此开关。
                 inst['use_nginx'] = meta.get('use_nginx', True)
                 # Auto-detect expired
                 if inst['end_date'] and inst['end_date'] < today and inst['status'] == 'running':
@@ -346,7 +368,14 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             mem_limit = data.get('mem_limit') or None
 
             if remote:
-                remote_docker.create_instance(remote, num, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
+                remote_docker.create_instance(
+                    remote,
+                    num,
+                    image=image,
+                    cpu_limit=cpu_limit,
+                    mem_limit=mem_limit,
+                    use_nginx=use_nginx,
+                )
             else:
                 create_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
@@ -407,7 +436,14 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             mem_limit = data.get('mem_limit') or None
 
             if remote:
-                remote_docker.reset_instance(remote, num, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
+                remote_docker.reset_instance(
+                    remote,
+                    num,
+                    image=image,
+                    cpu_limit=cpu_limit,
+                    mem_limit=mem_limit,
+                    use_nginx=use_nginx,
+                )
             else:
                 reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
@@ -514,7 +550,14 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                         stop_instance(num)
                 elif action == 'reset':
                     if remote:
-                        remote_docker.reset_instance(remote, num, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
+                        remote_docker.reset_instance(
+                            remote,
+                            num,
+                            image=image,
+                            cpu_limit=cpu_limit,
+                            mem_limit=mem_limit,
+                            use_nginx=use_nginx,
+                        )
                     else:
                         reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
                     # 更新元数据中的 use_nginx
@@ -562,32 +605,82 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
     def api_nginx_status(server_id):
         """获取 nginx 容器状态"""
         try:
-            if server_id != 'local':
-                return jsonify({"error": "暂不支持远程服务器nginx管理"}), 400
-            status = get_nginx_status()
+            remote = _get_remote_server(server_id)
+            status = remote_docker.get_nginx_status(remote) if remote else get_nginx_status()
             return jsonify(status)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/servers/<server_id>/nginx/preview')
+    @jwt_required()
+    def api_nginx_preview(server_id):
+        """Preview generated remote Nginx config without changing the server."""
+        try:
+            remote = _get_remote_server(server_id)
+            if not remote:
+                from docker_manager import _generate_nginx_config
+                return jsonify({"config": _generate_nginx_config(), "mode": "local"})
+            config, instances = remote_docker.preview_nginx_config(
+                remote,
+                disabled_ids=disabled_nginx_ids(server_id),
+            )
+            return jsonify({
+                "config": config,
+                "mode": "remote",
+                "instances": len(instances),
+                "settings": remote_docker.nginx_settings(remote),
+            })
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
     @app.route('/api/servers/<server_id>/nginx/<action>', methods=['POST'])
     @jwt_required()
     def api_nginx_action(server_id, action):
-        """nginx 容器操作: start, stop, restart, create"""
-        if server_id != 'local':
-            return jsonify({"error": "暂不支持远程服务器nginx管理"}), 400
-
+        """Nginx container actions for local and remote servers."""
         try:
-            if action == 'start':
-                result = start_nginx_container()
-            elif action == 'stop':
-                result = stop_nginx_container()
-            elif action == 'restart':
-                result = restart_nginx_container()
-            elif action == 'create':
-                result = create_nginx_container()
+            remote = _get_remote_server(server_id)
+            data = request.get_json(silent=True) or {}
+            if remote:
+                if action == 'start':
+                    result = remote_docker.start_nginx(remote)
+                elif action == 'stop':
+                    result = remote_docker.stop_nginx(remote)
+                elif action == 'restart':
+                    result = remote_docker.restart_nginx(remote)
+                elif action in ('create', 'deploy'):
+                    overrides = {
+                        'image': data.get('image'),
+                        'port': data.get('port'),
+                        'path': data.get('path'),
+                    }
+                    settings = remote_docker.nginx_settings(remote, overrides)
+                    result = remote_docker.deploy_nginx(
+                        remote,
+                        disabled_ids=disabled_nginx_ids(server_id),
+                        overrides=overrides,
+                    )
+                    update_server(
+                        server_id,
+                        nginx_image=settings['image'],
+                        nginx_port=settings['port'],
+                        nginx_path=settings['path'],
+                    )
+                else:
+                    return jsonify({"error": "不支持的操作"}), 400
             else:
-                return jsonify({"error": "不支持的操作"}), 400
+                if action == 'start':
+                    result = start_nginx_container()
+                elif action == 'stop':
+                    result = stop_nginx_container()
+                elif action == 'restart':
+                    result = restart_nginx_container()
+                elif action in ('create', 'deploy'):
+                    result = create_nginx_container()
+                else:
+                    return jsonify({"error": "不支持的操作"}), 400
             return jsonify(result)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 

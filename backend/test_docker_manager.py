@@ -13,7 +13,7 @@ class FakeImage:
 
 
 class FakeContainer:
-    def __init__(self, name, status, host_port):
+    def __init__(self, name, status, host_port, env=None):
         self.name = name
         self.status = status
         self.image = FakeImage()
@@ -22,6 +22,7 @@ class FakeContainer:
                 "Ports": {"5700/tcp": [{"HostPort": str(host_port)}]},
             },
             "State": {"Health": {"Status": "healthy"}},
+            "Config": {"Env": env or ["QlBaseUrl=/ql1/"]},
         }
 
 
@@ -57,8 +58,18 @@ class DockerManagerTests(unittest.TestCase):
         self.assertEqual(instances[0]["name"], "qinglong0")
         self.assertEqual(instances[1]["port"], 5701)
 
+    def test_wrong_legacy_environment_name_is_not_treated_as_ql_base_url(self):
+        client = FakeClient([
+            FakeContainer("qinglong0", "running", 5700, env=["QL_BASE_PATH=/ql0/"]),
+        ])
+
+        with patch.object(docker_manager, "get_client", return_value=client):
+            instances = docker_manager.list_instances()
+
+        self.assertEqual(instances[0]["ql_base_url"], "/")
+
     def test_nginx_config_uses_relative_trailing_slash_redirect(self):
-        instances = [{"id": 1, "name": "qinglong1", "status": "running", "port": 5701}]
+        instances = [{"id": 1, "name": "qinglong1", "status": "running", "port": 5701, "ql_base_url": "/ql1/"}]
 
         with patch.object(docker_manager, "list_instances", return_value=instances), patch.object(
             docker_manager,
@@ -71,6 +82,19 @@ class DockerManagerTests(unittest.TestCase):
         self.assertIn("return 308 /ql1/;", config)
         self.assertIn("proxy_pass http://qinglong1:5700;", config)
         self.assertIn("absolute_redirect off;", config)
+
+    def test_legacy_instance_uses_strip_prefix_compatibility_route(self):
+        instances = [{"id": 0, "name": "qinglong0", "status": "running", "port": 5700, "ql_base_url": "/"}]
+
+        with patch.object(docker_manager, "list_instances", return_value=instances), patch.object(
+            docker_manager,
+            "_get_nginx_enabled_instances",
+            return_value={0: True},
+        ):
+            config = docker_manager._generate_nginx_config()
+
+        self.assertIn("proxy_pass http://qinglong0:5700/;", config)
+        self.assertIn("proxy_cookie_path / /ql0/;", config)
 
 
 if __name__ == "__main__":
