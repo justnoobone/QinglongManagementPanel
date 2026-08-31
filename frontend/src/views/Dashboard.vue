@@ -257,12 +257,13 @@
                     class="inline-date-picker"
                     :class="{ invalid: inst.expired }"
                     type="date"
-                    :model-value="inst.end_date || null"
+                    v-model="inst.end_date"
                     format="YYYY-MM-DD"
                     value-format="YYYY-MM-DD"
                     placeholder="选择日期"
                     clearable
-                    @change="updateMetadata(inst, 'end_date', $event || '')"
+                    :disabled="savingMetadataIds.includes(inst.id)"
+                    @change="saveEndDate(inst, $event || '')"
                   />
                 </td>
                 <td>
@@ -288,9 +289,9 @@
                     <button
                       v-else
                       class="action-icon success"
-                      title="启动实例"
-                      aria-label="启动实例"
-                      :disabled="actionLoading"
+                      :title="inst.start_blocked ? '请先设置晚于今天的到期日期' : '启动实例'"
+                      :aria-label="inst.start_blocked ? '实例已过期，请先修改到期日期' : '启动实例'"
+                      :disabled="actionLoading || inst.start_blocked"
                       @click="doAction('start', inst.id)"
                     ><el-icon><VideoPlay /></el-icon></button>
                     <button class="action-icon" title="查看日志" aria-label="查看日志" @click="viewLogs(inst.id)">
@@ -298,9 +299,9 @@
                     </button>
                     <button
                       class="action-icon"
-                      title="重置实例"
-                      aria-label="重置实例"
-                      :disabled="actionLoading"
+                      :title="inst.start_blocked ? '请先设置晚于今天的到期日期' : '重置实例'"
+                      :aria-label="inst.start_blocked ? '实例已过期，请先修改到期日期' : '重置实例'"
+                      :disabled="actionLoading || inst.start_blocked"
                       @click="confirmInstanceAction('reset', inst.id)"
                     ><el-icon><RefreshRight /></el-icon></button>
                     <button
@@ -606,6 +607,7 @@ export default {
       error: '',
       selectedIds: [],
       selectAll: false,
+      savingMetadataIds: [],
       nginxInfo: { exists: false, status: 'not_found', image: '', ports: [] },
       showCreate: false,
       createNum: null,
@@ -719,11 +721,13 @@ export default {
       return this.confirmInstId === 0 ? 'whyour/qinglong:debian-python3.10' : 'whyour/qinglong:latest'
     },
     getStatusText(instance) {
+      if (instance.stopped_by_expiry && instance.start_blocked && instance.status !== 'running') return '到期停用'
       if (instance.expired && instance.status === 'running') return '已过期'
       const labels = { running: '运行中', exited: '已停止', restarting: '重启中', paused: '已暂停', created: '待启动', dead: '异常' }
       return labels[instance.status] || instance.status
     },
     getStatusClass(instance) {
+      if (instance.stopped_by_expiry && instance.start_blocked && instance.status !== 'running') return 'expired'
       if (instance.expired && instance.status === 'running') return 'expired'
       if (instance.status === 'running') return 'running'
       if (instance.status === 'restarting' || instance.status === 'created') return 'pending'
@@ -820,7 +824,10 @@ export default {
       this.error = ''
       try {
         const response = await axios.get(`/servers/${this.currentServer}/instances`, { headers: this.getAuthHeaders() })
-        this.instances = response.data
+        this.instances = response.data.map((instance) => ({
+          ...instance,
+          _savedEndDate: instance.end_date || '',
+        }))
         const ids = this.instances.map((instance) => instance.id)
         this.selectedIds = this.selectedIds.filter((id) => ids.includes(id))
         this.selectAll = ids.length > 0 && ids.every((id) => this.selectedIds.includes(id))
@@ -835,13 +842,30 @@ export default {
       instance[field] = value
       try {
         await axios.put(`/servers/${this.currentServer}/instances/${instance.id}/metadata`, {
-          start_date: instance.start_date || '',
-          end_date: instance.end_date || '',
-          notes: instance.notes || '',
+          [field]: value ?? '',
         }, { headers: this.getAuthHeaders() })
-        if (field === 'end_date') await this.loadInstances()
       } catch (error) {
         this.notify(error.response?.data?.error || '元数据更新失败', 'error')
+      }
+    },
+    async saveEndDate(instance, value) {
+      if (this.savingMetadataIds.includes(instance.id)) return
+      const previousValue = instance._savedEndDate ?? ''
+      instance.end_date = value || ''
+      this.savingMetadataIds.push(instance.id)
+      try {
+        const response = await axios.put(`/servers/${this.currentServer}/instances/${instance.id}/metadata`, {
+          end_date: instance.end_date,
+        }, { headers: this.getAuthHeaders() })
+        instance.end_date = response.data.metadata?.end_date || ''
+        instance._savedEndDate = instance.end_date
+        this.notify(instance.end_date ? '到期日期已保存' : '到期日期已清除')
+        await this.loadInstances()
+      } catch (error) {
+        instance.end_date = previousValue
+        this.notify(error.response?.data?.error || '到期日期保存失败', 'error')
+      } finally {
+        this.savingMetadataIds = this.savingMetadataIds.filter((id) => id !== instance.id)
       }
     },
     async doCreate() {

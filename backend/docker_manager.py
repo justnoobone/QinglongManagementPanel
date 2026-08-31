@@ -1,10 +1,10 @@
 import docker
 import os
 import shutil
-import json
 import re
 
 from nginx_config import generate_nginx_config
+from metadata_store import load_metadata
 
 # Docker 客户端 - 延迟初始化
 _client = None
@@ -279,19 +279,9 @@ NGINX_CONF_DIR = "/home/docker/nginx/conf.d"
 NGINX_LOG_DIR = "/home/docker/nginx/logs"
 NGINX_NETWORK = "ql_net"
 
-# 元数据文件路径
-METADATA_FILE = os.path.join(os.environ.get('PANEL_DATA_DIR', '/qlpanel/data'), 'instance_metadata.json')
-
-
 def _load_metadata():
     """加载实例元数据"""
-    if not os.path.exists(METADATA_FILE):
-        return {}
-    try:
-        with open(METADATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {}
+    return load_metadata()
 
 
 def _get_nginx_enabled_instances():

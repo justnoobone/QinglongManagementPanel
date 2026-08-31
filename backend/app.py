@@ -8,9 +8,10 @@ from server_manager import list_servers, add_server, update_server, delete_serve
 from remote_docker import check_connection as remote_check
 import remote_docker
 from auth import login, check_rate_limit
-import json
-import os
 import html as html_lib
+from metadata_store import load_metadata, metadata_transaction
+from expiry_scheduler import start_expiry_scheduler
+from expiry_rules import blocks_start, local_today, parse_date
 
 
 def create_app():
@@ -27,25 +28,18 @@ def create_app():
     # SocketIO
     socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
-    # Instance metadata
-    METADATA_FILE = os.path.join(Config.PANEL_DATA_DIR, 'instance_metadata.json')
-
-    def load_metadata():
-        if not os.path.exists(METADATA_FILE):
-            return {}
-        try:
-            with open(METADATA_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return {}
-
-    def save_metadata(metadata):
-        os.makedirs(os.path.dirname(METADATA_FILE), exist_ok=True)
-        with open(METADATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-
     def metadata_key(server_id, num):
         return f"{server_id}:{num}"
+
+    def update_instance_metadata(server_id, num, values):
+        with metadata_transaction() as metadata:
+            item = metadata.setdefault(metadata_key(server_id, num), {})
+            item.update(values)
+            return dict(item)
+
+    def remove_instance_metadata(server_id, num):
+        with metadata_transaction() as metadata:
+            metadata.pop(metadata_key(server_id, num), None)
 
     def disabled_nginx_ids(server_id):
         prefix = f"{server_id}:"
@@ -309,21 +303,20 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
 
             # Enrich with metadata
             metadata = load_metadata()
-            from datetime import datetime
-            today = datetime.now().strftime('%Y-%m-%d')
+            today = local_today().isoformat()
             for inst in instances:
                 key = metadata_key(server_id, inst['id'])
                 meta = metadata.get(key, {})
                 inst['start_date'] = meta.get('start_date', '')
                 inst['end_date'] = meta.get('end_date', '')
                 inst['notes'] = meta.get('notes', '')
+                inst['expiry_state'] = meta.get('expiry_state', '')
+                inst['stopped_by_expiry'] = meta.get('stopped_by_expiry', False)
+                inst['last_expiry_error'] = meta.get('last_expiry_error', '')
                 # use_nginx 默认 True，远程 Nginx 部署时也使用此开关。
                 inst['use_nginx'] = meta.get('use_nginx', True)
-                # Auto-detect expired
-                if inst['end_date'] and inst['end_date'] < today and inst['status'] == 'running':
-                    inst['expired'] = True
-                else:
-                    inst['expired'] = False
+                inst['expired'] = bool(inst['end_date'] and inst['end_date'] <= today)
+                inst['start_blocked'] = blocks_start(meta) if server_id == 'local' else False
 
             return jsonify(instances)
         except Exception as e:
@@ -334,27 +327,51 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
     def api_update_metadata(server_id, num):
         """Update instance metadata (start_date, end_date, notes, use_nginx)"""
         data = request.get_json(silent=True) or {}
-        metadata = load_metadata()
-        key = metadata_key(server_id, num)
-
-        if key not in metadata:
-            metadata[key] = {}
-
-        if 'start_date' in data:
-            metadata[key]['start_date'] = data['start_date']
         if 'end_date' in data:
-            metadata[key]['end_date'] = data['end_date']
-        if 'notes' in data:
-            metadata[key]['notes'] = data['notes']
+            try:
+                parsed_end = parse_date(data.get('end_date'))
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+            normalized_end = parsed_end.isoformat() if parsed_end else ''
+        else:
+            normalized_end = None
+
+        key = metadata_key(server_id, num)
+        with metadata_transaction() as metadata:
+            item = metadata.setdefault(key, {})
+            if server_id == 'local' and normalized_end is not None and blocks_start(item):
+                if not normalized_end or normalized_end <= local_today().isoformat():
+                    return jsonify({
+                        "error": "实例已过期，只能设置晚于今天的新到期日期",
+                        "code": "INSTANCE_EXPIRED",
+                    }), 409
+            if 'start_date' in data:
+                item['start_date'] = data['start_date']
+            if normalized_end is not None:
+                item['end_date'] = normalized_end
+                item['expiry_state'] = 'scheduled' if normalized_end else 'cleared'
+                if normalized_end and normalized_end > local_today().isoformat():
+                    item['stopped_by_expiry'] = False
+                    item['last_expiry_error'] = ''
+            if 'notes' in data:
+                item['notes'] = data['notes']
+            if 'use_nginx' in data:
+                item['use_nginx'] = bool(data['use_nginx'])
+
+            saved_metadata = dict(item)
+
         if 'use_nginx' in data:
-            metadata[key]['use_nginx'] = bool(data['use_nginx'])
             # use_nginx 变更后需要更新 nginx 配置
             if server_id == 'local':
                 from docker_manager import _update_nginx_config
                 _update_nginx_config()
 
-        save_metadata(metadata)
-        return jsonify({"message": "更新成功", "metadata": metadata[key]})
+        if server_id == 'local' and normalized_end and normalized_end <= local_today().isoformat():
+            from expiry_scheduler import run_expiry_check
+            run_expiry_check()
+            saved_metadata = load_metadata().get(key, saved_metadata)
+
+        return jsonify({"message": "更新成功", "metadata": saved_metadata})
 
     @app.route('/api/servers/<server_id>/create/<int:num>', methods=['POST'])
     @jwt_required()
@@ -362,6 +379,8 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
         try:
             remote = _get_remote_server(server_id)
             data = request.get_json(silent=True) or {}
+            if data.get('end_date'):
+                data['end_date'] = parse_date(data['end_date']).isoformat()
             use_nginx = data.get('use_nginx', True)
             image = data.get('image') or None
             cpu_limit = data.get('cpu_limit') or None
@@ -381,18 +400,19 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
 
             # Save metadata if provided
             if data.get('start_date') or data.get('end_date') or data.get('notes') or 'use_nginx' in data:
-                metadata = load_metadata()
-                key = metadata_key(server_id, num)
-                if key not in metadata:
-                    metadata[key] = {}
+                values = {'use_nginx': use_nginx}
                 if data.get('start_date'):
-                    metadata[key]['start_date'] = data.get('start_date', '')
+                    values['start_date'] = data.get('start_date', '')
                 if data.get('end_date'):
-                    metadata[key]['end_date'] = data.get('end_date', '')
+                    values['end_date'] = data.get('end_date', '')
+                    values['expiry_state'] = 'scheduled'
                 if data.get('notes') is not None:
-                    metadata[key]['notes'] = data.get('notes', '')
-                metadata[key]['use_nginx'] = use_nginx
-                save_metadata(metadata)
+                    values['notes'] = data.get('notes', '')
+                update_instance_metadata(server_id, num, values)
+
+            if server_id == 'local' and data.get('end_date') and data['end_date'] <= local_today().isoformat():
+                from expiry_scheduler import run_expiry_check
+                run_expiry_check()
 
             return jsonify({"msg": "创建成功"})
         except Exception as e:
@@ -403,6 +423,13 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
     def api_start(server_id, num):
         try:
             remote = _get_remote_server(server_id)
+            if not remote:
+                metadata = load_metadata().get(metadata_key(server_id, num), {})
+                if blocks_start(metadata):
+                    return jsonify({
+                        "error": "实例已过期，请先设置晚于今天的到期日期后再启动",
+                        "code": "INSTANCE_EXPIRED",
+                    }), 409
             if remote:
                 remote_docker.start_instance(remote, num)
             else:
@@ -429,6 +456,13 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
     def api_reset(server_id, num):
         try:
             remote = _get_remote_server(server_id)
+            if not remote:
+                metadata = load_metadata().get(metadata_key(server_id, num), {})
+                if blocks_start(metadata):
+                    return jsonify({
+                        "error": "实例已过期，请先设置晚于今天的到期日期后再重置",
+                        "code": "INSTANCE_EXPIRED",
+                    }), 409
             data = request.get_json(silent=True) or {}
             use_nginx = data.get('use_nginx', True)
             image = data.get('image') or None
@@ -448,12 +482,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                 reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
             # 更新元数据中的 use_nginx
-            metadata = load_metadata()
-            key = metadata_key(server_id, num)
-            if key not in metadata:
-                metadata[key] = {}
-            metadata[key]['use_nginx'] = use_nginx
-            save_metadata(metadata)
+            update_instance_metadata(server_id, num, {'use_nginx': use_nginx})
 
             return jsonify({"msg": "重置成功"})
         except Exception as e:
@@ -471,11 +500,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                 delete_instance(num)
 
             # Clean metadata
-            metadata = load_metadata()
-            key = metadata_key(server_id, num)
-            if key in metadata:
-                del metadata[key]
-                save_metadata(metadata)
+            remove_instance_metadata(server_id, num)
 
             return jsonify({"msg": "删除成功"})
         except Exception as e:
@@ -493,11 +518,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                 purge_instance(num)
 
             # Clean metadata
-            metadata = load_metadata()
-            key = metadata_key(server_id, num)
-            if key in metadata:
-                del metadata[key]
-                save_metadata(metadata)
+            remove_instance_metadata(server_id, num)
 
             return jsonify({"msg": "彻底删除成功"})
         except Exception as e:
@@ -542,6 +563,9 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                     if remote:
                         remote_docker.start_instance(remote, num)
                     else:
+                        item = load_metadata().get(metadata_key(server_id, num), {})
+                        if blocks_start(item):
+                            raise ValueError('实例已过期，请先设置晚于今天的到期日期后再启动')
                         start_instance(num)
                 elif action == 'stop':
                     if remote:
@@ -559,36 +583,26 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                             use_nginx=use_nginx,
                         )
                     else:
+                        item = load_metadata().get(metadata_key(server_id, num), {})
+                        if blocks_start(item):
+                            raise ValueError('实例已过期，请先设置晚于今天的到期日期后再重置')
                         reset_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
                     # 更新元数据中的 use_nginx
-                    metadata = load_metadata()
-                    key = metadata_key(server_id, num)
-                    if key not in metadata:
-                        metadata[key] = {}
-                    metadata[key]['use_nginx'] = use_nginx
-                    save_metadata(metadata)
+                    update_instance_metadata(server_id, num, {'use_nginx': use_nginx})
                 elif action == 'delete':
                     if remote:
                         remote_docker.delete_instance(remote, num)
                     else:
                         delete_instance(num)
                     # Clean metadata for deleted
-                    metadata = load_metadata()
-                    key = metadata_key(server_id, num)
-                    if key in metadata:
-                        del metadata[key]
-                        save_metadata(metadata)
+                    remove_instance_metadata(server_id, num)
                 elif action == 'purge':
                     if remote:
                         remote_docker.purge_instance(remote, num)
                     else:
                         purge_instance(num)
                     # Clean metadata for purged
-                    metadata = load_metadata()
-                    key = metadata_key(server_id, num)
-                    if key in metadata:
-                        del metadata[key]
-                        save_metadata(metadata)
+                    remove_instance_metadata(server_id, num)
                 results["success"].append(num)
             except Exception as e:
                 results["failed"].append({"num": num, "error": str(e)})
@@ -714,4 +728,5 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
 app, socketio = create_app()
 
 if __name__ == '__main__':
+    start_expiry_scheduler()
     socketio.run(app, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

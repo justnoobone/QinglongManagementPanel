@@ -15,6 +15,11 @@ services:
       QL_IMAGE: "${QL_IMAGE:-whyour/qinglong:latest}"
       PANEL_DATA_DIR: /qlpanel/data
       DOCKER_HOST: "${DOCKER_HOST:-unix:///host/run/docker.sock}"
+      TZ: "${TZ:-Asia/Shanghai}"
+      EXPIRY_SCHEDULER_ENABLED: "${EXPIRY_SCHEDULER_ENABLED:-true}"
+      EXPIRY_CHECK_HOUR: "${EXPIRY_CHECK_HOUR:-0}"
+      EXPIRY_CHECK_MINUTE: "${EXPIRY_CHECK_MINUTE:-5}"
+      EXPIRY_CHECK_INTERVAL: "${EXPIRY_CHECK_INTERVAL:-30}"
     volumes:
       # Mount the parent directory so a Docker daemon restart does not leave
       # the panel attached to a stale Unix socket inode.
