@@ -1,144 +1,372 @@
-# Qinglong Panel
+# Qinglong Management Panel
 
-青龙多实例管理面板，用于在一台或多台服务器上批量管理青龙（qinglong）Docker 实例。支持本机 Docker（通过 Docker Socket）和远程服务器（通过 SSH）两种模式。
+面向青龙 Docker 多实例的管理面板。一个 `ql_manager` 容器同时提供 Web UI、管理 API 和本机到期调度，可管理本机 Docker，也可通过 SSH 管理远程服务器。
 
-## 技术栈
+![青龙管理面板](image.png)
 
-| 层级 | 技术 |
-|------|------|
-| 前端 | Vue 3 + Vite + Axios |
-| 后端 | Flask + Flask-JWT-Extended + Flask-SocketIO + Flask-CORS |
-| 容器管理 | Docker SDK for Python（本机）、Paramiko（远程 SSH） |
-| 反向代理 | Nginx（容器内静态资源 + API 代理，独立 Nginx 容器代理青龙实例） |
+## 功能概览
 
-## 快速开始
+- 本机与远程服务器统一管理，支持编辑已保存的远程服务器配置
+- 创建、启动、停止、重置、删除和彻底删除青龙实例
+- 批量启动、停止、重置、删除与彻底删除
+- 自定义镜像、CPU、内存、到期日期、备注和 Nginx 接入状态
+- Apple 风格响应式界面，支持浅色/深色主题
+- 容器日志查看和实例运行状态展示
+- 本机实例到期自动停止，不需要额外的定时任务容器
+- 本机及远程 Nginx 配置预览、部署、启动、停止和重启
+- `/qlN/` 子路径反向代理，兼容未正确设置 `QlBaseUrl` 的历史实例
 
-### 1. 配置环境变量
+## 架构
 
-```bash
-cp .env.example .env
-# 编辑 .env，修改账号、密码和密钥
+项目本身只部署一个 Compose 服务：
+
+```text
+浏览器
+  |
+  |-- http://host/ 或 :8080
+  v
+ql_manager
+  |-- Nginx :80          前端静态资源、API 与 WebSocket 代理
+  |-- Flask :5000        登录、实例管理、远程 SSH、到期调度
+  |-- Docker Socket      管理本机容器
+  `-- ./data             服务器配置和实例元数据
+
+独立 nginx（可选，默认 :91）
+  `-- /ql0/、/ql1/ ...   反向代理到对应青龙容器
 ```
 
-### 2. 启动面板
+`ql_manager` 内部的 Python 线程负责每日到期检查，不会因此再创建一个 Docker 容器。独立 `nginx` 只用于青龙实例的 `/qlN/` 反向代理，不属于面板 Compose 服务。
+
+## 部署要求
+
+- Linux 服务器
+- Docker Engine 和 Docker Compose v2
+- 可用的宿主机端口 `80`、`8080`；需要反向代理时还需端口 `91`
+- 一个名为 `ql_net` 的 bridge 网络
+- 当前用户有执行 Docker 命令的权限
+- 管理远程服务器时，目标机需要 Docker、SSH 服务以及可执行 Docker 的账号
+
+## 快速部署
+
+### 1. 准备配置
+
+```bash
+git clone https://github.com/justnoobone/QinglongManagementPanel.git
+cd QinglongManagementPanel
+cp .env.example .env
+```
+
+部署前至少修改以下四项：
+
+```dotenv
+PANEL_USERNAME=admin
+PANEL_PASSWORD=使用强密码
+SECRET_KEY=使用足够长的随机字符串
+JWT_SECRET_KEY=使用另一个足够长的随机字符串
+```
+
+可用下面的命令生成随机密钥：
+
+```bash
+openssl rand -hex 32
+```
+
+### 2. 创建 Docker 网络
+
+```bash
+docker network inspect ql_net >/dev/null 2>&1 || docker network create ql_net
+```
+
+### 3. 构建并启动
 
 ```bash
 docker compose up -d --build
 ```
 
-### 3. 访问面板
+### 4. 验证
 
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1/api/health
+docker logs --tail 100 ql_manager
 ```
-http://服务器IP
+
+预期健康接口返回：
+
+```json
+{"status":"ok"}
 ```
 
-为兼容旧书签，`http://服务器IP:8080` 仍然可用。
+访问地址：
 
-默认账号密码见 `.env` 文件（`PANEL_USERNAME` / `PANEL_PASSWORD`），部署前务必修改。
+- 主入口：`http://服务器IP/`
+- 兼容入口：`http://服务器IP:8080/`
 
-## 架构说明
+## 实例约定
 
-单容器部署，Nginx + Flask 运行在同一个容器内：
+面板识别 `qinglongN` 和历史名称 `qlN`，列表只展示编号 `0` 到 `100` 的实例，因此新建时必须使用该范围。新建实例统一使用 `qinglongN`。
 
-- **Nginx** 监听 `80` 端口，负责前端静态资源和 `/api/`、`/socket.io/` 反向代理
-- **Flask** 监听 `127.0.0.1:5000`，处理所有 API 请求
-- Compose 同时暴露 `80:80` 和 `8080:80`
-- 容器名固定为 `ql_manager`，用于 nginx 反向代理容器中的导航页回源
-- 面板通过 `/host/run/docker.sock` 访问 Docker；宿主机 `/run` 以只读方式挂载，避免 Docker daemon 重启后容器继续持有失效的 socket inode
+| 项目 | 实例 0 | 实例 N |
+| --- | --- | --- |
+| 容器名 | `qinglong0` | `qinglongN` |
+| 默认镜像 | `whyour/qinglong:debian-python3.10` | `whyour/qinglong:latest` |
+| 宿主机端口 | `5700` | `5700 + N` |
+| 容器端口 | `5700` | `5700` |
+| 默认 CPU | 1 核 | 1 核 |
+| 默认内存 | 1 GB | 1 GB |
+| 默认数据目录 | `/home/docker/qinglong/qinglong0` | `/home/docker/qinglong/qinglongN` |
+| 重启策略 | `unless-stopped` | `unless-stopped` |
+| Docker 网络 | `ql_net` | `ql_net` |
 
-## 新建实例默认配置
+启用 Nginx 时，新实例会写入大小写敏感的环境变量：
 
-通过面板新建青龙实例时，后端使用以下默认配置创建 Docker 容器：
+```text
+QlBaseUrl=/qlN/
+```
 
-| 配置项 | 实例 0（qinglong0） | 实例 1 ~ 100（qinglongN） |
-|--------|--------------|--------------------------|
-| **默认镜像** | `whyour/qinglong:debian-python3.10` | `whyour/qinglong:latest` |
-| **CPU 限制** | 1 核（`nano_cpus=1000000000`） | 1 核（`nano_cpus=1000000000`） |
-| **内存限制** | 1 GB（`mem_limit=1g`） | 1 GB（`mem_limit=1g`） |
-| **容器名** | `qinglong0` | `qinglong1`, `qinglong2`, ... |
-| **端口映射** | `5700:5700` | `5700+N:5700` |
-| **数据目录** | `/home/docker/qinglong/qinglong0` → `/ql/data` | `/home/docker/qinglong/qinglongN` → `/ql/data` |
-| **网络** | `ql_net`（bridge） | `ql_net`（bridge） |
-| **重启策略** | `unless-stopped` | `unless-stopped` |
-| **环境变量** | `QlBaseUrl=/ql0/`（如启用 nginx） | `QlBaseUrl=/qlN/`（如启用 nginx） |
+青龙不会识别 `QL_BASE_PATH` 作为等价配置。对于已有的旧容器，配置生成器会自动使用剥离 `/qlN/` 前缀的兼容代理模式，避免静态资源和 API 因路径错误而白屏。
 
-> **镜像可通过环境变量覆盖**：`QL0_IMAGE` 控制实例 0 的镜像，`QL_IMAGE` 控制实例 1+ 的镜像。数据目录基础路径由 `QL_DATA_PATH` 控制，默认为 `/home/docker/qinglong`。
+## 访问青龙实例
 
-> **远程服务器**：SSH 模式同样支持自定义镜像、CPU/内存限制和 `QlBaseUrl`。远程默认镜像为 `whyour/qinglong:latest`。
+| 方式 | 示例 | 条件 |
+| --- | --- | --- |
+| 直连 | `http://服务器IP:5701/` | 实例 1 正在运行且端口已放行 |
+| 反向代理 | `http://服务器IP:91/ql1/` | 独立 Nginx 已部署，实例启用了代理 |
+| 代理导航页 | `http://服务器IP:91/` | 独立 Nginx 正在运行 |
 
-## 主要功能
+`/qlN` 会使用 `308` 自动补全为 `/qlN/`。浏览器访问时建议始终保留末尾斜杠。
 
-- **JWT 登录认证**：失败次数限制（5 次错误锁定 300 秒）
-- **多服务器管理**：默认包含"本机"服务器，可通过 SSH 添加远程服务器
-- **实例全生命周期管理**：创建、启动、停止、重置、删除（保留数据）、彻底删除（含数据）
-- **批量操作**：支持多选实例后批量启动、停止、重置、删除、彻底删除
-- **实时日志查看**：通过 WebSocket（Socket.IO）获取容器日志
-- **到期日期与备注**：表格内直接编辑到期日期和备注，到期实例红色高亮标记
-- **到期自动停止**：`ql_manager` 每天按北京时间检查本机实例，到期日当天或漏检后自动停止；过期实例续期前不可启动
-- **Nginx 反向代理**：一键部署独立 Nginx 容器（端口 91），通过 `/qlN/` 子路径访问青龙面板
-- **远程 Nginx 自动化**：可为新增或已有远程服务器指定 Nginx 镜像版本、端口和目录，预览配置后通过 SSH 部署
-- **导航页**：Nginx 代理访问 `http://host:91/` 自动展示运行中的青龙实例列表
-- **直连访问**：每个实例可直接通过 `http://host:5700+N/` 访问
+## 到期自动停止
 
-## 访问方式
+到期调度器直接运行在 `ql_manager` 的 Flask 进程中，默认使用北京时间每天 `00:05` 检查一次。进程在计划时间之后启动时，会在启动后补做当天检查。
 
-每个青龙实例支持两种访问方式：
+规则如下：
 
-| 方式 | URL 格式 | 说明 |
-|------|---------|------|
-| **代理访问** | `http://host:91/qlN/` | 需部署 Nginx 反向代理容器，实例需启用 nginx 选项；末尾斜杠可自动补全 |
-| **直连访问** | `http://host:5700+N/` | 直接访问容器端口，始终可用 |
+1. 只检查状态为 `running` 的本机实例。
+2. 到期日期等于当天时停止实例。
+3. 到期日期早于当天时也停止实例，避免服务器关机或任务异常造成漏检。
+4. 用户当天新保存一个已到期日期时，后端会立即执行检查，不等待第二天。
+5. 过期实例禁止启动和重置，批量操作也不能绕过。
+6. 过期后不能清空日期，也不能继续填写今天或过去日期；必须改成晚于今天的新日期才可重新启动。
+7. 调度器只读取 `local:N` 元数据，不会通过 SSH、远程 API 或远程 Docker 停止其他服务器上的实例。
 
-> 实例 0 同样可以启用 Nginx 代理；面板会兼容 `ql0` 和 `qinglong0` 两种历史容器名称。
+审计调度日志：
 
-## 远程服务器 Nginx
+```bash
+docker logs ql_manager 2>&1 | grep expiry_scheduler
+```
 
-远程代理必须部署在青龙实例所在的远程服务器上。面板本机的 Nginx 无法直接解析另一台服务器中的 Docker 容器名。
+手动执行只读预演，不会停止容器：
 
-1. 编辑或选择远程服务器，确认 SSH 地址、账号和青龙数据路径正确。
-2. 点击服务器栏右侧的 Nginx 设置按钮。
-3. 指定镜像（默认固定为 `nginx:1.29.7-alpine`）、宿主机端口（默认 `91`）和配置目录。
-4. 可先预览生成的配置，再确认部署。
+```bash
+docker exec -w /qlpanel/backend ql_manager \
+  python -c "from expiry_scheduler import run_expiry_check; print(run_expiry_check(dry_run=True))"
+```
 
-部署动作会拉取镜像、创建 `ql_net`、把青龙容器接入该网络、执行 `nginx -t`，最后切换 Nginx 容器。若新容器启动检查失败，会尝试恢复原容器。服务器防火墙或安全组还需放行所配置的端口。
+调度参数：
 
-历史容器如果只有 `QL_BASE_PATH=/qlN/` 而没有大小写正确的 `QlBaseUrl=/qlN/`，青龙本身不会识别该前缀。配置生成器会自动识别并改用剥离前缀的兼容代理，因此无需仅为修复白屏而重建旧实例。
+| 变量 | 默认值 | 有效范围 | 说明 |
+| --- | --- | --- | --- |
+| `TZ` | `Asia/Shanghai` | 时区名称 | 容器时区 |
+| `EXPIRY_SCHEDULER_ENABLED` | `true` | `true/false` | 是否启用内置调度器 |
+| `EXPIRY_CHECK_HOUR` | `0` | `0-23` | 每日检查小时 |
+| `EXPIRY_CHECK_MINUTE` | `5` | `0-59` | 每日检查分钟 |
+| `EXPIRY_CHECK_INTERVAL` | `30` | `10-3600` | 后台线程轮询间隔，单位秒 |
 
-## 目录挂载
+修改 `.env` 后需重建 `ql_manager` 使环境变量生效：
 
-| 容器内路径 | 宿主机路径（默认） | 说明 |
-|-----------|-------------------|------|
-| `/host/run` | `/run`（只读） | 通过 `/host/run/docker.sock` 与 Docker API 通信，并兼容 daemon 重启后的 socket 更新 |
-| `/home/docker/qinglong` | `/home/docker/qinglong` | 青龙实例数据目录 |
-| `/qlpanel/data` | `./data` | 面板数据（服务器列表、实例元数据） |
-| `/home/docker/nginx` | `/home/docker/nginx` | Nginx 反向代理配置和日志 |
+```bash
+docker compose up -d --build --no-deps ql-panel
+```
 
-以上宿主机路径均可通过 `.env` 文件中的环境变量自定义。
+## 本机 Nginx 反向代理
+
+面板可以管理一个名为 `nginx` 的独立容器，默认使用宿主机端口 `91`，配置保存在：
+
+```text
+/home/docker/nginx/conf.d/ql_panels.conf
+```
+
+在控制台选择本机后，可预览配置并部署、启动、停止或重启 Nginx。实例创建、删除或代理开关变化时，面板会重写配置并尝试 reload 正在运行的 Nginx。
+
+常用检查：
+
+```bash
+docker exec nginx nginx -t
+curl -I http://127.0.0.1:91/ql0/
+curl -I http://127.0.0.1:91/ql1/
+```
+
+注意：本机 Nginx 的镜像和端口目前由后端常量定义，默认镜像为 `nginx:alpine`、端口为 `91`。界面中的镜像、端口和目录自定义部署主要用于远程服务器。
+
+## 远程服务器与远程 Nginx
+
+添加远程服务器时，面板会先使用 SSH 密码测试连接。保存后的密码使用由 `JWT_SECRET_KEY` 派生的 Fernet 密钥加密，配置写入面板数据目录。
+
+远程 Nginx 推荐流程：
+
+1. 添加或编辑远程服务器，确认 SSH 地址、端口、账号和青龙数据根目录。
+2. 选择该服务器，进入 Nginx 配置界面。
+3. 指定镜像、宿主机端口和持久化目录。
+4. 先预览生成的配置。
+5. 在维护窗口确认部署。
+
+远程部署会执行以下操作：
+
+- 拉取指定 Nginx 镜像
+- 创建或检查 `ql_net`
+- 将识别到的青龙容器接入 `ql_net`
+- 使用候选配置执行 `nginx -t`
+- 短暂停止并切换已有同名 Nginx 容器
+- 新容器检查失败时尝试恢复旧容器
+
+默认远程 Nginx 配置：
+
+| 项目 | 默认值 |
+| --- | --- |
+| 镜像 | `nginx:1.29.7-alpine` |
+| 宿主机端口 | `91` |
+| 数据目录 | `/home/docker/nginx` |
+| 容器名 | `nginx` |
+| Docker 网络 | `ql_net` |
+
+远程 Nginx 切换会产生数秒访问中断，应在维护窗口执行。面板的到期自动停止不作用于远程服务器，但用户主动点击的远程启动、停止、重置、删除和 Nginx 部署会立即通过 SSH 执行。
 
 ## 环境变量
 
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
 | `PANEL_USERNAME` | `admin` | 面板登录用户名 |
-| `PANEL_PASSWORD` | `change-me` | 面板登录密码 |
-| `SECRET_KEY` | - | Flask Session 密钥 |
-| `JWT_SECRET_KEY` | - | JWT 签名密钥 |
-| `QL_IMAGE` | `whyour/qinglong:latest` | 实例 1+ 使用的镜像 |
-| `QL0_IMAGE` | `whyour/qinglong:debian-python3.10` | 实例 0 使用的镜像 |
-| `QL_DATA_PATH` | `/home/docker/qinglong` | 青龙数据目录（容器内路径） |
-| `QL_HOST_DATA_PATH` | `/home/docker/qinglong` | 青龙数据目录（宿主机路径） |
-| `PANEL_HOST_DATA_PATH` | `./data` | 面板数据目录（宿主机路径） |
-| `NGINX_HOST_PATH` | `/home/docker/nginx` | Nginx 配置目录（宿主机路径） |
-| `DOCKER_HOST` | `unix:///host/run/docker.sock` | 面板容器连接宿主机 Docker 的 socket 地址 |
+| `PANEL_PASSWORD` | `change-me` | 面板登录密码，生产环境必须修改 |
+| `SECRET_KEY` | `change-this-secret-key` | Flask 密钥，生产环境必须修改 |
+| `JWT_SECRET_KEY` | `change-this-jwt-secret-key` | JWT 及远程密码加密密钥，生产环境必须修改 |
+| `QL_IMAGE` | `whyour/qinglong:latest` | 实例 1 及以上的默认镜像 |
+| `QL0_IMAGE` | `whyour/qinglong:debian-python3.10` | 实例 0 的默认镜像 |
+| `QL_DATA_PATH` | `/home/docker/qinglong` | 面板容器内的青龙数据根目录 |
+| `QL_HOST_DATA_PATH` | `/home/docker/qinglong` | 宿主机青龙数据根目录 |
+| `PANEL_HOST_DATA_PATH` | `./data` | 面板持久化数据目录 |
+| `NGINX_HOST_PATH` | `/home/docker/nginx` | 本机独立 Nginx 持久化目录 |
+| `DOCKER_HOST` | `unix:///host/run/docker.sock` | 面板连接宿主机 Docker 的 Socket |
+| `TZ` | `Asia/Shanghai` | 面板和调度器时区 |
+| `EXPIRY_SCHEDULER_ENABLED` | `true` | 是否启用本机到期调度 |
+| `EXPIRY_CHECK_HOUR` | `0` | 每日检查小时 |
+| `EXPIRY_CHECK_MINUTE` | `5` | 每日检查分钟 |
+| `EXPIRY_CHECK_INTERVAL` | `30` | 后台轮询间隔，单位秒 |
 
-## 注意事项
+## 持久化数据
 
-- 面板通过宿主机 Docker socket 管理容器，等同于赋予面板容器主机级别的 Docker 控制权限
-- **不要直接暴露到公网**，至少应使用强密码、随机密钥，并放在可信网络或额外反向代理认证之后
-- 远程 SSH 密码使用 Fernet 加密存储（密钥由 JWT_SECRET_KEY 派生）
-- 彻底删除（purge）操作会同时删除容器和数据目录，不可恢复，请谨慎操作
-- 到期调度器运行在 `ql_manager` 内，不会创建额外容器；默认每天 `00:05` 检查，仅处理 `local:N` 元数据，不会连接远程服务器
+| 容器路径 | 默认宿主机路径 | 内容 |
+| --- | --- | --- |
+| `/qlpanel/data` | `./data` | 服务器配置、加密密码、实例元数据和到期状态 |
+| `/home/docker/qinglong` | `/home/docker/qinglong` | 青龙实例数据目录 |
+| `/home/docker/nginx` | `/home/docker/nginx` | 本机独立 Nginx 配置与日志 |
+| `/host/run` | `/run`，只读 | Docker Socket 所在父目录 |
 
-## 截图
+挂载整个 `/run` 而不是单独挂载 `/var/run/docker.sock`，是为了避免 Docker daemon 重启后 `ql_manager` 继续持有已经失效的 Socket inode。
 
-![青龙管理面板仪表盘](image.png)
+建议至少备份：
+
+```bash
+tar -czf qinglong-panel-backup.tgz ./data /home/docker/qinglong /home/docker/nginx
+```
+
+不要提交 `.env` 和 `data/`，它们已被 `.gitignore` 排除并可能包含敏感信息。
+
+## 升级与回滚
+
+升级前记录当前提交并备份持久化数据：
+
+```bash
+git rev-parse --short HEAD
+tar -czf qinglong-panel-data-backup.tgz ./data
+git pull --ff-only
+docker compose up -d --build --no-deps ql-panel
+curl -fsS http://127.0.0.1/api/health
+```
+
+回滚源码和面板容器：
+
+```bash
+git log --oneline -10
+git checkout <已验证的提交>
+docker compose up -d --build --no-deps ql-panel
+```
+
+只使用 `--no-deps ql-panel` 可以限定重建范围为面板容器，不会主动重建青龙实例或独立 Nginx。切换到旧提交前仍应检查数据格式兼容性。
+
+## 测试
+
+生产镜像中包含后端依赖，可使用隔离容器运行测试：
+
+```bash
+docker build -t qinglong-panel-ql-panel .
+docker run --rm --entrypoint sh \
+  -v "$PWD/backend:/test:ro" \
+  qinglong-panel-ql-panel \
+  -c 'cd /test && python -m unittest discover -p "test_*.py" -v'
+```
+
+前端生产构建包含在 `docker build` 中。若宿主机的 `frontend/node_modules` 权限或 Rollup 可选依赖异常，以干净 Docker 构建结果为准。
+
+## 故障排查
+
+### 面板显示本机没有实例
+
+检查 Docker Socket 和实例命名：
+
+```bash
+docker exec ql_manager sh -c 'echo "$DOCKER_HOST"'
+docker exec -w /qlpanel/backend ql_manager \
+  python -c "from docker_manager import list_instances; print(list_instances())"
+docker ps -a --format '{{.Names}}' | grep -E '^(qinglong|ql)[0-9]+$'
+```
+
+若 Docker daemon 重启后出现 `ConnectionRefusedError`，确认 Compose 仍挂载 `/run:/host/run:ro`，且 `DOCKER_HOST=unix:///host/run/docker.sock`，然后只重建面板：
+
+```bash
+docker compose up -d --force-recreate --no-deps ql-panel
+```
+
+### `/qlN/` 白屏
+
+检查容器真实的 `QlBaseUrl`、代理配置和静态资源类型：
+
+```bash
+docker inspect qinglong0 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E 'QlBaseUrl|QL_BASE_PATH'
+docker exec nginx nginx -t
+curl -I http://127.0.0.1:91/ql0/
+```
+
+只有 `QlBaseUrl` 大小写完全正确时，青龙才会原生识别子路径。旧实例无需仅为此问题重建，生成器会使用兼容代理模式。
+
+### 到期任务没有执行
+
+```bash
+docker logs ql_manager 2>&1 | grep expiry_scheduler
+docker exec ql_manager date
+docker exec -w /qlpanel/backend ql_manager \
+  python -c "from expiry_scheduler import run_expiry_check; print(run_expiry_check(dry_run=True))"
+```
+
+确认 `.env` 中未关闭 `EXPIRY_SCHEDULER_ENABLED`，并检查设置的小时、分钟是否在有效范围内。
+
+## 安全说明
+
+- Docker Socket 等价于宿主机级 Docker 管理权限，只应向可信管理员开放面板。
+- 不要使用默认账号、密码或密钥部署到生产环境。
+- 不建议直接暴露在公网；应限制来源网络，并增加 HTTPS、访问控制或上游认证。
+- `JWT_SECRET_KEY` 同时参与远程 SSH 密码加密。随意更换后，已有远程密码将无法解密，需要重新录入。
+- “重置”会删除实例数据目录后重建；“彻底删除”会删除容器和数据目录，均应提前备份。
+- 远程 Nginx 部署会操作目标服务器上的 Docker 和现有同名容器，必须先预览并安排维护窗口。
+
+## 技术栈
+
+- 前端：Vue 3、Vite、Element Plus、Axios
+- 后端：Flask、Flask-JWT-Extended、Flask-SocketIO
+- 本机容器管理：Docker SDK for Python
+- 远程管理：Paramiko SSH
+- 反向代理：Nginx
+
+## License
+
+[Apache License 2.0](LICENSE)

@@ -13,6 +13,7 @@ services:
       JWT_SECRET_KEY: "${JWT_SECRET_KEY:-change-this-jwt-secret-key}"
       QL_DATA_PATH: "${QL_DATA_PATH:-/home/docker/qinglong}"
       QL_IMAGE: "${QL_IMAGE:-whyour/qinglong:latest}"
+      QL0_IMAGE: "${QL0_IMAGE:-whyour/qinglong:debian-python3.10}"
       PANEL_DATA_DIR: /qlpanel/data
       DOCKER_HOST: "${DOCKER_HOST:-unix:///host/run/docker.sock}"
       TZ: "${TZ:-Asia/Shanghai}"
