@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import app as app_module
 import metadata_store
+from flask_jwt_extended import decode_token
 
 
 class ExpiryApiTests(unittest.TestCase):
@@ -38,6 +39,13 @@ class ExpiryApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()['metadata']['end_date'], '2099-09-02')
         self.assertEqual(metadata_store.load_metadata()['local:0']['end_date'], '2099-09-02')
+
+    def test_login_token_is_valid_for_30_days(self):
+        token = self.headers['Authorization'].removeprefix('Bearer ')
+        with app_module.app.app_context():
+            claims = decode_token(token)
+
+        self.assertEqual(claims['exp'] - claims['iat'], 30 * 24 * 60 * 60)
 
     def test_invalid_date_is_rejected_without_overwriting_saved_value(self):
         metadata_store.save_metadata({'local:0': {'end_date': '2099-09-02'}})

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <style>
+    .background { fill: #3a3a3c; }
+    .mark { fill: #ffffff; }
+    @media (prefers-color-scheme: dark) {
+      .background { fill: #f2f2f7; }
+      .mark { fill: #1c1c1e; }
+    }
+  </style>
+  <rect class="background" x="2" y="2" width="60" height="60" rx="12" />
+  <path
+    class="mark"
+    transform="translate(6.4 6.4) scale(.05)"
+    d="M640 384v256H384V384zm64 0h192v256H704zm-64 512H384V704h256zm64 0V704h192v192zm-64-768v192H384V128zm64 0h192v192H704zM320 384v256H128V384zm0 512H128V704h192zm0-768v192H128V128z"
+  />
+</svg>
