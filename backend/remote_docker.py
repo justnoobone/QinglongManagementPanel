@@ -187,7 +187,8 @@ def create_instance(server, num, port=None, image=None, cpu_limit=None, mem_limi
     base_path = _safe_absolute_path(server.get('path'), '/home/docker/qinglong')
     data_dir = posixpath.join(base_path, name)
     image = _safe_image(image, 'whyour/qinglong:latest')
-    base_url = f'/ql{num}/' if use_nginx else '/'
+    # Keep direct access at http://host:port/. Nginx owns /qlN/ externally.
+    base_url = '/'
 
     options = [
         '--restart unless-stopped',
@@ -256,7 +257,8 @@ def reset_instance(server, num, image=None, cpu_limit=None, mem_limit=None, use_
     data_dir = posixpath.join(base_path, name)
     port = 5700 + num
     image = _safe_image(image, 'whyour/qinglong:latest')
-    base_url = f'/ql{num}/' if use_nginx else '/'
+    # Keep direct access at http://host:port/. Nginx owns /qlN/ externally.
+    base_url = '/'
     options = [
         '--restart unless-stopped',
         f'--hostname {shlex.quote(name)}',

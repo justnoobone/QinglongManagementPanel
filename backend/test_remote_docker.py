@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import remote_docker
 
@@ -34,6 +35,14 @@ class RemoteDockerTests(unittest.TestCase):
         self.assertIn('docker network connect ql_net qinglong0', script)
         self.assertIn('docker rename nginx nginx_ql_rollback', script)
         self.assertLess(script.index('nginx -t'), script.index('docker stop nginx'))
+
+    def test_created_instance_keeps_direct_access_at_root(self):
+        with patch.object(remote_docker, '_run', return_value=(0, 'container-id', '')) as remote_run:
+            remote_docker.create_instance(self.server, 1, use_nginx=True)
+
+        command = remote_run.call_args.args[1]
+        self.assertIn('QlBaseUrl=/', command)
+        self.assertNotIn('QlBaseUrl=/ql1/', command)
 
 
 if __name__ == '__main__':

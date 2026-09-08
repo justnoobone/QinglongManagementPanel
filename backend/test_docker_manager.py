@@ -80,7 +80,9 @@ class DockerManagerTests(unittest.TestCase):
 
         self.assertIn("location = /ql1", config)
         self.assertIn("return 308 /ql1/;", config)
-        self.assertIn("proxy_pass http://qinglong1:5700;", config)
+        self.assertIn("set $ql1_upstream http://qinglong1:5700;", config)
+        self.assertIn("proxy_pass $ql1_upstream;", config)
+        self.assertNotIn("rewrite ^/ql1/", config)
         self.assertIn("absolute_redirect off;", config)
 
     def test_legacy_instance_uses_strip_prefix_compatibility_route(self):
@@ -93,7 +95,11 @@ class DockerManagerTests(unittest.TestCase):
         ):
             config = docker_manager._generate_nginx_config()
 
-        self.assertIn("proxy_pass http://qinglong0:5700/;", config)
+        self.assertIn("location = /ql0/api/env.js", config)
+        self.assertIn('window.__ENV__QlBaseUrl="/ql0/"', config)
+        self.assertIn("set $ql0_upstream http://qinglong0:5700;", config)
+        self.assertIn("rewrite ^/ql0/(.*)$ /$1 break;", config)
+        self.assertIn("proxy_pass $ql0_upstream;", config)
         self.assertIn("proxy_cookie_path / /ql0/;", config)
 
 

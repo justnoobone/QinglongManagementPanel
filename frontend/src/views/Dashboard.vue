@@ -246,7 +246,7 @@
                       <el-icon><Link /></el-icon>
                       <span>代理</span>
                     </a>
-                    <a :href="getDirectUrl(inst.port)" target="_blank" rel="noreferrer" class="access-link direct">
+                    <a :href="getDirectUrl(inst)" target="_blank" rel="noreferrer" class="access-link direct">
                       <el-icon><Monitor /></el-icon>
                       <span>直连</span>
                     </a>
@@ -545,6 +545,7 @@
 <script>
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
+import { buildDirectUrl } from '../utils/access-url.js'
 import {
   Box,
   CircleCheck,
@@ -705,8 +706,8 @@ export default {
       if (this.isLocalServer()) return window.location.hostname
       return this.servers.find((server) => server.id === this.currentServer)?.host || window.location.hostname
     },
-    getDirectUrl(port) {
-      return `http://${this.getCurrentHost()}:${port}/`
+    getDirectUrl(instance) {
+      return buildDirectUrl(this.getCurrentHost(), instance)
     },
     getNginxUrl(id) {
       return `http://${this.getCurrentHost()}:${this.nginxPort}/ql${id}/`

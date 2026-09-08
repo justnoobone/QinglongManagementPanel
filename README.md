@@ -119,13 +119,13 @@ docker logs --tail 100 ql_manager
 | 重启策略 | `unless-stopped` | `unless-stopped` |
 | Docker 网络 | `ql_net` | `ql_net` |
 
-启用 Nginx 时，新实例会写入大小写敏感的环境变量：
+新实例始终使用根路径，保证实例端口可以直接访问：
 
 ```text
-QlBaseUrl=/qlN/
+QlBaseUrl=/
 ```
 
-青龙不会识别 `QL_BASE_PATH` 作为等价配置。对于已有的旧容器，配置生成器会自动使用剥离 `/qlN/` 前缀的兼容代理模式，避免静态资源和 API 因路径错误而白屏。
+Nginx 对外提供 `/qlN/` 前缀，并在转发到青龙容器前剥离该前缀。代理入口会单独注入浏览器运行时的 `QlBaseUrl=/qlN/`，因此前端 API、路由和异步资源继续使用代理前缀，同时不会改变实例自身的直连地址。配置生成器仍兼容历史上使用 `QlBaseUrl=/qlN/` 的容器。
 
 ## 访问青龙实例
 
@@ -338,7 +338,7 @@ docker exec nginx nginx -t
 curl -I http://127.0.0.1:91/ql0/
 ```
 
-只有 `QlBaseUrl` 大小写完全正确时，青龙才会原生识别子路径。旧实例无需仅为此问题重建，生成器会使用兼容代理模式。
+新实例应使用 `QlBaseUrl=/`，由 Nginx 剥离 `/qlN/` 后再转发。配置生成器仍会识别历史上使用 `QlBaseUrl=/qlN/` 的实例并采用保留前缀模式。
 
 ### 到期任务没有执行
 

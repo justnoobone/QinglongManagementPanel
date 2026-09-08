@@ -148,13 +148,9 @@ def create_instance(num, use_nginx=True, image=None, cpu_limit=None, mem_limit=N
         os.makedirs(data_dir, exist_ok=True)
         print(f"已创建数据目录: {data_dir}")
 
-    # 设置 QlBaseUrl 环境变量
-    # QlBaseUrl 让青龙面板知道自己在子路径下运行
-    # 这样前端 JS 的 API 调用和静态资源路径都会自动加上子路径前缀
-    if use_nginx:
-        ql_base_url = f"/ql{num}/"
-    else:
-        ql_base_url = "/"
+    # The container always serves its direct port from /. Nginx owns the
+    # external /qlN/ prefix and strips it before proxying upstream.
+    ql_base_url = "/"
 
     client.containers.run(
         image,

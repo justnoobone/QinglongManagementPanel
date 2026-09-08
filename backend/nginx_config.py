@@ -31,12 +31,22 @@ def _location_block(instance):
 
     prefix = f"/ql{num}"
     preserves_prefix = uses_prefixed_base_url(instance)
-    proxy_pass = f"http://{container_name}:5700" + ("" if preserves_prefix else "/")
+    upstream_variable = f"$ql{num}_upstream"
 
     compatibility = ""
+    runtime_environment = ""
+    rewrite = ""
     mode_comment = "QlBaseUrl prefix mode"
     if not preserves_prefix:
-        mode_comment = "legacy compatibility mode: strip /qlN/ before proxying"
+        mode_comment = "root direct mode: inject /qlN/ in the proxied runtime environment"
+        runtime_environment = f"""
+    location = {prefix}/api/env.js {{
+        default_type application/javascript;
+        add_header Cache-Control "no-store" always;
+        return 200 'window.__ENV__QlBaseUrl="{prefix}/";window.__ENV__QL_DIR="/ql";';
+    }}
+"""
+        rewrite = f"\n        rewrite ^{prefix}/(.*)$ /$1 break;"
         compatibility = f"""
         proxy_set_header X-Forwarded-Prefix {prefix};
         proxy_redirect ~^(/.*)$ {prefix}$1;
@@ -48,8 +58,10 @@ def _location_block(instance):
         return 308 {prefix}/;
     }}
 
+{runtime_environment}
     location {prefix}/ {{
-        proxy_pass {proxy_pass};
+        set {upstream_variable} http://{container_name}:5700;{rewrite}
+        proxy_pass {upstream_variable};
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -115,7 +127,8 @@ def generate_nginx_config(instances, enabled_ids=None, nav_upstream=None):
     }}"""
 
     return f"""# Managed by Qinglong Control. Manual changes may be overwritten.
-# Modern instances preserve /qlN/ through QlBaseUrl. Legacy instances strip it.
+# Prefixed instances preserve /qlN/. Root-direct instances receive an injected
+# browser base URL while Nginx strips /qlN/ before proxying upstream.
 server {{
     listen 80;
     server_name _;
