@@ -44,6 +44,17 @@ class RemoteDockerTests(unittest.TestCase):
         self.assertIn('QlBaseUrl=/', command)
         self.assertNotIn('QlBaseUrl=/ql1/', command)
 
+    def test_sync_script_reloads_existing_nginx_without_replacing_container(self):
+        settings = remote_docker.nginx_settings(self.server)
+        instances = [{'id': 1, 'name': 'qinglong1', 'ql_base_url': '/'}]
+        script = remote_docker._build_nginx_sync_script(settings, instances, 'server { listen 80; }')
+
+        self.assertIn('.ql_panels.conf.sync', script)
+        self.assertIn('nginx -s reload', script)
+        self.assertIn('previous configuration restored', script)
+        self.assertNotIn('docker stop nginx', script)
+        self.assertNotIn('docker rename nginx', script)
+
 
 if __name__ == '__main__':
     unittest.main()

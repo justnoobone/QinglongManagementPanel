@@ -52,6 +52,31 @@ def create_app():
                     continue
         return disabled
 
+    def sync_remote_nginx(server_id, remote):
+        """Refresh a running remote Nginx after instance/metadata changes.
+
+        Nginx may have been deployed before the first Qinglong instance was
+        created. In that case its old config legitimately contains no routes;
+        lifecycle operations must regenerate it after the container exists.
+        """
+        if not remote:
+            return {}
+        status = remote_docker.get_nginx_status(remote)
+        if not status.get('exists') or status.get('status') != 'running':
+            return {}
+        try:
+            return {
+                'nginx_sync': remote_docker.sync_nginx_config(
+                    remote,
+                    disabled_ids=disabled_nginx_ids(server_id),
+                )
+            }
+        except Exception as exc:
+            app.logger.exception('Remote Nginx sync failed for %s', server_id)
+            return {
+                'warning': f'实例操作已完成，但代理配置同步失败：{exc}。请重新执行 Nginx 部署。'
+            }
+
     def _get_client_ip():
         """获取客户端真实 IP"""
         if request.headers.get('X-Forwarded-For'):
@@ -360,18 +385,21 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
 
             saved_metadata = dict(item)
 
+        nginx_result = {}
         if 'use_nginx' in data:
             # use_nginx 变更后需要更新 nginx 配置
             if server_id == 'local':
                 from docker_manager import _update_nginx_config
                 _update_nginx_config()
+            else:
+                nginx_result = sync_remote_nginx(server_id, _get_remote_server(server_id))
 
         if server_id == 'local' and normalized_end and normalized_end <= local_today().isoformat():
             from expiry_scheduler import run_expiry_check
             run_expiry_check()
             saved_metadata = load_metadata().get(key, saved_metadata)
 
-        return jsonify({"message": "更新成功", "metadata": saved_metadata})
+        return jsonify({"message": "更新成功", "metadata": saved_metadata, **nginx_result})
 
     @app.route('/api/servers/<server_id>/create/<int:num>', methods=['POST'])
     @jwt_required()
@@ -398,23 +426,22 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             else:
                 create_instance(num, use_nginx=use_nginx, image=image, cpu_limit=cpu_limit, mem_limit=mem_limit)
 
-            # Save metadata if provided
-            if data.get('start_date') or data.get('end_date') or data.get('notes') or 'use_nginx' in data:
-                values = {'use_nginx': use_nginx}
-                if data.get('start_date'):
-                    values['start_date'] = data.get('start_date', '')
-                if data.get('end_date'):
-                    values['end_date'] = data.get('end_date', '')
-                    values['expiry_state'] = 'scheduled'
-                if data.get('notes') is not None:
-                    values['notes'] = data.get('notes', '')
-                update_instance_metadata(server_id, num, values)
+            # Persist the proxy switch before regenerating remote routes.
+            values = {'use_nginx': use_nginx}
+            if data.get('start_date'):
+                values['start_date'] = data.get('start_date', '')
+            if data.get('end_date'):
+                values['end_date'] = data.get('end_date', '')
+                values['expiry_state'] = 'scheduled'
+            if data.get('notes') is not None:
+                values['notes'] = data.get('notes', '')
+            update_instance_metadata(server_id, num, values)
 
             if server_id == 'local' and data.get('end_date') and data['end_date'] <= local_today().isoformat():
                 from expiry_scheduler import run_expiry_check
                 run_expiry_check()
 
-            return jsonify({"msg": "创建成功"})
+            return jsonify({"msg": "创建成功", **sync_remote_nginx(server_id, remote)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -434,7 +461,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                 remote_docker.start_instance(remote, num)
             else:
                 start_instance(num)
-            return jsonify({"msg": "启动成功"})
+            return jsonify({"msg": "启动成功", **sync_remote_nginx(server_id, remote)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -447,7 +474,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
                 remote_docker.stop_instance(remote, num)
             else:
                 stop_instance(num)
-            return jsonify({"msg": "停止成功"})
+            return jsonify({"msg": "停止成功", **sync_remote_nginx(server_id, remote)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -484,7 +511,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             # 更新元数据中的 use_nginx
             update_instance_metadata(server_id, num, {'use_nginx': use_nginx})
 
-            return jsonify({"msg": "重置成功"})
+            return jsonify({"msg": "重置成功", **sync_remote_nginx(server_id, remote)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -502,7 +529,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             # Clean metadata
             remove_instance_metadata(server_id, num)
 
-            return jsonify({"msg": "删除成功"})
+            return jsonify({"msg": "删除成功", **sync_remote_nginx(server_id, remote)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -520,7 +547,7 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             # Clean metadata
             remove_instance_metadata(server_id, num)
 
-            return jsonify({"msg": "彻底删除成功"})
+            return jsonify({"msg": "彻底删除成功", **sync_remote_nginx(server_id, remote)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -611,7 +638,10 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
         msg = f"批量{action_names[action]}完成: 成功{len(results['success'])}个"
         if results["failed"]:
             msg += f", 失败{len(results['failed'])}个"
-        return jsonify({"msg": msg, "results": results})
+        nginx_result = {}
+        if remote and results['success']:
+            nginx_result = sync_remote_nginx(server_id, remote)
+        return jsonify({"msg": msg, "results": results, **nginx_result})
 
     # ========== Nginx 容器管理 ==========
     @app.route('/api/servers/<server_id>/nginx')
@@ -657,10 +687,12 @@ h1 {{ margin: 0; font-size: 30px; font-weight: 650; }}
             if remote:
                 if action == 'start':
                     result = remote_docker.start_nginx(remote)
+                    result.update(sync_remote_nginx(server_id, remote))
                 elif action == 'stop':
                     result = remote_docker.stop_nginx(remote)
                 elif action == 'restart':
                     result = remote_docker.restart_nginx(remote)
+                    result.update(sync_remote_nginx(server_id, remote))
                 elif action in ('create', 'deploy'):
                     overrides = {
                         'image': data.get('image'),

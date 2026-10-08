@@ -3,6 +3,7 @@ import json
 import posixpath
 import re
 import shlex
+import threading
 
 import paramiko
 
@@ -19,6 +20,9 @@ DEFAULT_NGINX_PORT = 91
 DEFAULT_NGINX_PATH = "/home/docker/nginx"
 DEFAULT_NGINX_CONTAINER = "nginx"
 DEFAULT_NGINX_NETWORK = "ql_net"
+
+_NGINX_SYNC_LOCKS = {}
+_NGINX_SYNC_LOCKS_GUARD = threading.Lock()
 
 
 def _ssh_exec(host, port, username, password, command, timeout=30):
@@ -452,6 +456,76 @@ def deploy_nginx(server, enabled_ids=None, disabled_ids=None, overrides=None):
         'instances': len(instances),
         'legacy_compatible_instances': legacy_count,
     }
+
+
+def _build_nginx_sync_script(settings, instances, config_content):
+    """Build a no-container-replacement Nginx config sync script."""
+    image = shlex.quote(settings['image'])
+    name = shlex.quote(settings['container_name'])
+    network = shlex.quote(settings['network'])
+    base_path = shlex.quote(settings['path'])
+    conf_dir = posixpath.join(settings['path'], 'conf.d')
+    candidate_file = posixpath.join(conf_dir, '.ql_panels.conf.sync')
+    final_file = posixpath.join(conf_dir, 'ql_panels.conf')
+    backup_file = posixpath.join(conf_dir, '.ql_panels.conf.sync.backup')
+    check_name = f"{settings['container_name']}_config_check"
+    encoded = shlex.quote(base64.b64encode(config_content.encode('utf-8')).decode('ascii'))
+    mount_template = shlex.quote(
+        '{{range .Mounts}}{{if eq .Destination "/etc/nginx/conf.d"}}{{.Source}}{{end}}{{end}}'
+    )
+
+    lines = [
+        'set -eu',
+        f'mkdir -p {base_path}/conf.d {base_path}/logs',
+        f'actual_conf_dir=$(docker inspect -f {mount_template} {name})',
+        f'[ "$actual_conf_dir" = {shlex.quote(conf_dir)} ]',
+        f'printf %s {encoded} | base64 -d > {shlex.quote(candidate_file)}',
+        f'docker rm -f {shlex.quote(check_name)} >/dev/null 2>&1 || true',
+    ]
+    for instance in instances:
+        container_name = shlex.quote(_safe_docker_name(instance.get('name'), ''))
+        lines.append(
+            f'docker network connect {network} {container_name} >/dev/null 2>&1 || true'
+        )
+    lines.extend([
+        (
+            f'docker run --rm --name {shlex.quote(check_name)} '
+            f'-v {shlex.quote(candidate_file)}:/etc/nginx/conf.d/ql_panels.conf:ro '
+            f'--network {network} {image} nginx -t'
+        ),
+        f'if [ -f {shlex.quote(final_file)} ]; then cp -p {shlex.quote(final_file)} {shlex.quote(backup_file)}; else rm -f {shlex.quote(backup_file)}; fi',
+        f'mv {shlex.quote(candidate_file)} {shlex.quote(final_file)}',
+        f'if docker exec {name} nginx -t >/dev/null 2>&1 && docker exec {name} nginx -s reload >/dev/null 2>&1; then',
+        f'  rm -f {shlex.quote(backup_file)}',
+        '  echo NGINX_SYNC_OK',
+        'else',
+        f'  if [ -f {shlex.quote(backup_file)} ]; then mv {shlex.quote(backup_file)} {shlex.quote(final_file)}; else rm -f {shlex.quote(final_file)}; fi',
+        f'  docker exec {name} nginx -t >/dev/null 2>&1 && docker exec {name} nginx -s reload >/dev/null 2>&1 || true',
+        '  echo "Nginx reload failed; previous configuration restored" >&2',
+        '  exit 1',
+        'fi',
+    ])
+    return '\n'.join(lines)
+
+
+def sync_nginx_config(server, enabled_ids=None, disabled_ids=None):
+    """Synchronize routes in an existing running remote Nginx container."""
+    settings = nginx_settings(server)
+    key = (server['host'], int(server.get('port', 22)), settings['container_name'])
+    with _NGINX_SYNC_LOCKS_GUARD:
+        lock = _NGINX_SYNC_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        status = get_nginx_status(server)
+        if not status['exists'] or status['status'] != 'running':
+            return {'status': 'skipped', 'reason': status['status']}
+        config_content, instances = preview_nginx_config(
+            server, enabled_ids=enabled_ids, disabled_ids=disabled_ids,
+        )
+        script = _build_nginx_sync_script(settings, instances, config_content)
+        code, out, err = _run(server, script, timeout=120)
+        if code != 0:
+            _raise_remote_error('远程 Nginx 配置同步失败，原配置已恢复', code, err, out)
+        return {'status': 'reloaded', 'instances': len(instances)}
 
 
 def start_nginx(server):
